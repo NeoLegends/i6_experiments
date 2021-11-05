@@ -15,7 +15,9 @@ class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
                alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
-               _attention_type=0):
+               _attention_type=0, post_config={}):
+
+    self.post_config = post_config
 
     # data
     self.target = target
@@ -119,13 +121,15 @@ class TransducerSWBBaseConfig:
     ]
 
   def get_config(self):
-    config_dict = {k: v for k, v in self.__dict__.items() if not (k.endswith("_prolog") or k.endswith("_epilog"))}
+    config_dict = {k: v for k, v in self.__dict__.items() if
+                   not (k.endswith("_prolog") or k.endswith("_epilog") or k == "post_config")}
     prolog = [prolog_item for k, prolog_list in self.__dict__.items() if k.endswith("_prolog") for prolog_item in
               prolog_list]
     epilog = [epilog_item for k, epilog_list in self.__dict__.items() if k.endswith("_epilog") for epilog_item in
               epilog_list]
+    post_config = self.post_config
 
-    return ReturnnConfig(config=config_dict, python_prolog=prolog, python_epilog=epilog)
+    return ReturnnConfig(config=config_dict, post_config=post_config, python_prolog=prolog, python_epilog=epilog)
 
   def set_for_search(self, dataset_key):
     self.extern_data["targetb"] = {"dim": self.targetb_num_labels, "sparse": True, "available_for_inference": False}
@@ -133,8 +137,22 @@ class TransducerSWBBaseConfig:
     self.batch_size = 4000
     self.beam_size = 12
 
+  def set_config_for_search(self, config: ReturnnConfig, dataset_key):
+    config.config["extern_data"]["targetb"] = {"dim": self.targetb_num_labels, "sparse": True,
+                                              "available_for_inference": False}
+    # index = config.python_epilog.index("eval_datasets = {'devtrain': get_dataset_dict('devtrain')}")
+    config.python_epilog += ["search_data = get_dataset_dict('%s')" % dataset_key]
+    # config.python_epilog.insert(index+1, "search_data = get_dataset_dict('%s')" % dataset_key)
+    config.config.update({
+      "batch_size": 4000,
+      "beam_size": 12
+    })
+
   def update(self, **kwargs):
     self.__dict__.update(kwargs)
+
+    if "EncKeyTotalDim" in kwargs:
+      self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
 
 
 class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
@@ -188,3 +206,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
   def set_for_search(self, dataset_key):
     super().set_for_search(dataset_key)
     self.extern_data[self.target] = {"dim": self.target_num_labels, "sparse": True}
+
+  def set_config_for_search(self, config: ReturnnConfig, dataset_key):
+    super().set_config_for_search(config, dataset_key)
+    config.config["extern_data"][self.target] = {"dim": self.target_num_labels, "sparse": True}

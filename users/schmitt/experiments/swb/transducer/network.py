@@ -423,74 +423,56 @@ def get_extended_net_dict(pretrain_idx):
   net_dict["encoder0"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
 
   def get_output_dict(train, search, targetb, beam_size=beam_size):
+    """This is the decoder without attention. The attention is added via attention.py"""
     return {
       "class": "rec", "from": "encoder", "include_eos": True, "back_prop": (task == "train") and train, "unit": {
-        # "am": {"class": "gather_nd", "from": "base:encoder", "position": "prev:t"},  # [B,D]
         "am": {"class": "copy", "from": "data:source"}, # could make more efficient...
-        # "enc_ctx_win": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
-        # "enc_val_win": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,D]
-        # "att_query": {
-        #   "class": "linear", "from": "am", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim},
-        # 'att_energy': {
-        #   "class": "dot", "red1": "f", "red2": "f", "var1": "static:0", "var2": None,
-        #   "from": ['enc_ctx_win', 'att_query']},  # (B, W)
-        # 'att_weights0': {
-        #   "class": "softmax_over_spatial", "axis": "static:0", "from": 'att_energy',
-        #   "energy_factor": EncKeyPerHeadDim ** -0.5},  # (B, W)
-        # 'att_weights1': {
-        #   "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
-        #   "dropout": AttentionDropout},
-        # "att_weights": {"class": "merge_dims", "from": "att_weights1", "axes": "except_time"},
-        # 'att': {
-        #   "class": "dot", "from": ['att_weights', 'enc_val_win'], "red1": "static:0", "red2": "static:0",
-        #   "var1": None, "var2": "f"},  # (B, V)
-
-        "prev_out_non_blank": {
+        "prev_out_non_blank": { # this is the previous output
           "class": "reinterpret_data", "from": "prev:output_", "set_sparse_dim": target_num_labels,
-          "set_sparse": True}, "lm_masked": {
+          "set_sparse": True},
+        # SlowRNN: only do computations on the steps where a non-blank label was output
+        # Recurrent unit which takes embedding of last label and last attention vector
+        "lm_masked": {
           "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_out_non_blank",  # in decoding
-
           "unit": {
             "class": "subnetwork", "from": "data", "subnetwork": {
               "input_embed": {
                 "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621},
-              "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim, "from": ["input_embed", "base:att"]},
+              "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim, "from": ["input_embed"]},
               "output": {"class": "copy", "from": "lstm0"}}}},
         "lm_embed_masked": {"class": "copy", "from": "lm_masked"},
         "lm_embed_unmask": {"class": "unmask", "from": "lm_embed_masked", "mask": "prev:output_emit"},
         "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
 
-        "prev_label_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_out_non_blank",  # in decoding
-          "unit": {"class": "linear", "activation": None, "n_out": 256}},
-        "prev_label_unmask": {"class": "unmask", "from": "prev_label_masked", "mask": "prev:output_emit"},
-
-        "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128}, "s": {
+        "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128},
+        # FastRNN: recurrent network which takes current encoder frame, embedding of previous output and output
+        # from SlowRNN
+        "s": {
           "class": "rec", "unit": "nativelstm2", "from": ["am", "prev_out_embed", "lm"], "n_out": 128, "L2": l2,
           "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}},
 
-        "readout_in": {"class": "linear", "from": ["s", "att", "lm"], "activation": None, "n_out": 1000},
+        # joint network: combine FastRNN output and SlowRNN output
+        "readout_in": {"class": "linear", "from": ["s", "lm"], "activation": None, "n_out": 1000},
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
 
+        # log-prob for non-blank labels
         "label_log_prob": {
           "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
           "n_out": target_num_labels}, "label_prob": {
           "class": "activation", "from": "label_log_prob", "activation": "exp"},
+        # emit log-prob
         "emit_prob0": {"class": "linear", "from": "s", "activation": None, "n_out": 1, "is_output_layer": True},
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
+        # blank log-prob
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
+        # combine label log-probs and emit log-prob to get final non-blank log-prob
         "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
-        # 1 gets broadcasted
-        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]}, "output_prob": {
+        # concat non-blank log-probs and blank log-prob
+        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
+        # obtain probabilities by applying exp
+        "output_prob": {
           "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb, "loss": "ce",
           "loss_opts": {"focal_loss_factor": 2.0}},
-
-        # "output_ce": {
-        #    "class": "loss", "from": "output_prob", "target_": "layer:output", "loss_": "ce", "loss_opts_": {"label_smoothing": 0.1},
-        #    "loss": "as_is" if train else None, "loss_scale": 0 if train else None},
-        # "output_err": {"class": "copy", "from": "output_ce/error", "loss": "as_is" if train else None, "loss_scale": 0 if train else None},
-        # "output_ce_blank": {"class": "eval", "from": "output_ce", "eval": "source(0) * 0.03"},  # non-blank/blank factor
-        # "loss": {"class": "switch", "condition": "output_is_blank", "true_from": "output_ce_blank", "false_from": "output_ce", "loss": "as_is" if train else None},
 
         'output': {
           'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
@@ -498,7 +480,8 @@ def get_extended_net_dict(pretrain_idx):
           # "explicit_search_sources": ["prev:u"] if task == "train" else None,
           # "custom_score_combine": targetb_recomb_train if task == "train" else None
           "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" else None,
-          "custom_score_combine": targetb_recomb_recog if task == "search" else None}, "output_": {
+          "custom_score_combine": targetb_recomb_recog if task == "search" else None},
+        "output_": {
           "class": "eval", "from": "output", "eval": switchout_target,
           "initial_output": 0, } if task == "train" else {"class": "copy", "from": "output", "initial_output": 0},
 
