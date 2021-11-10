@@ -13,12 +13,11 @@ def calc_segment_stats(blank_idx, segment):
   elif segment == "first":
     segment_idxs = ":1"
     initial_idx = "0"
-  elif segment == "middle":
-    segment_idxs = "1:-1"
+  elif segment == "except_first":
+    segment_idxs = "1:"
     initial_idx = "non_blank_idxs[0]"
   else:
-    segment_idxs = "-1:"
-    initial_idx = "non_blank_idxs[-2]"
+    raise ValueError("segment definition unknown")
   dataset.init_seq_order()
   seq_idx = 0
   seg_total_len = 0
@@ -29,27 +28,27 @@ def calc_segment_stats(blank_idx, segment):
     # print(data)
     non_blank_idxs = np.where(data != blank_idx)[0]
     if non_blank_idxs.size == 0:
-      num_segs += 1
-      seg_total_len += len(data)
+      continue
     else:
-      non_blank_idxs = np.append(non_blank_idxs, [len(data)])
+      # non_blank_idxs = np.append(non_blank_idxs)
       prev_i = eval(initial_idx)
-      for i in eval("non_blank_idxs[" + segment_idxs + "]"):
-        # each non-blank idx corresponds to one segment
-        num_segs += 1
-        # the segment length is the difference from the previous border to the current one
-        # for the first and last segment, the result needs to be corrected (see after while)
-        seg_total_len += i - prev_i
-        prev_i = i
+      try:
+        for i in eval("non_blank_idxs[" + segment_idxs + "]"):
+          # each non-blank idx corresponds to one segment
+          num_segs += 1
+          # the segment length is the difference from the previous border to the current one
+          # for the first and last segment, the result needs to be corrected (see after while)
+          seg_total_len += i - prev_i
+          prev_i = i
+      except IndexError:
+        continue
 
     seq_idx += 1
 
   # the first segment is always 1 too short
   if segment == "first":
     seg_total_len += num_segs
-  # the last segment is always 1 too long
-  elif segment == "last":
-    seg_total_len -= num_segs
+
   mean_seg_len = seg_total_len / num_segs
 
   filename = "mean.seg.len"
@@ -86,10 +85,10 @@ def main():
   arg_parser.add_argument("--seq-list-filter-file", help="whitelist of sequences to use", default=None)
   arg_parser.add_argument("--blank-idx", help="the blank index in the alignment", default=0, type=int)
   arg_parser.add_argument("--segment", help="over which segments to calculate the statistics: 'total', 'first', "
-                                            "'last', 'middle', 'all' (default: 'all')", default="all")
+                                            "'except_first', 'all' (default: 'all')", default="all")
   arg_parser.add_argument("--returnn-root", help="path to returnn root")
   args = arg_parser.parse_args()
-  assert args.segment in ["first", "middle", "last", "all", "total"]
+  assert args.segment in ["first", "except_first", "all", "total"]
   sys.path.insert(0, args.returnn_root)
   global rnn
   import returnn.__main__ as rnn
@@ -98,7 +97,7 @@ def main():
 
   try:
     if args.segment == "all":
-      for seg in ["total", "first", "middle", "last"]:
+      for seg in ["total", "first", "except_first"]:
         calc_segment_stats(args.blank_idx, seg)
     else:
       calc_segment_stats(args.blank_idx, args.segment)
