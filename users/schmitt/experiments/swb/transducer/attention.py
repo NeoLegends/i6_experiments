@@ -100,9 +100,9 @@ def add_attention(net_dict, attention_type):
   else:
     # calculate attention in all other cases
     net_dict["output"]["unit"].update({
-      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1", "red2": "spatial:-1",
-               "var1": "f",
-               "var2": "static:0"},  # (B, 1, V)
+      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
+              "red2": "static:-1" if att_area == "win" else "dyn:-1",
+               "var1": "f", "var2": "static:0"},  # (B, 1, V)
       "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
     })
 
@@ -123,7 +123,7 @@ def add_attention(net_dict, attention_type):
       # context and value are just the windows at the corresponding step in the decoder
       net_dict["output"]["unit"].update(
         {"att_ctx": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
-        "att_val": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,V],
+         "att_val": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,V],
       })
     elif att_win_size == "full":
       if att_weight_feedback and att_type == "mlp":
@@ -148,14 +148,16 @@ def add_attention(net_dict, attention_type):
         })
         net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
       else:
-          net_dict["output"]["unit"].update({
-            "att_ctx0": {  # (B, T, D)
-              "class": "linear", "from": "base:encoder", "activation": None, "with_bias": False,
-              "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}, "att_ctx": {
-              "class": "reinterpret_data", "from": "att_ctx0", "set_dim_tags": {
-                "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}}, "att_val": {  # (B,T,V)
-              "class": "reinterpret_data", "from": "base:encoder", "set_dim_tags": {
-                "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
+        net_dict["output"]["unit"].update({
+          "att_ctx0": {  # (B, T, D)
+            "class": "linear", "from": ["base:encoder"], "activation": None, "with_bias": False,
+            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
+          "att_ctx": {
+            "class": "reinterpret_data", "from": ["att_ctx0"], "set_dim_tags": {
+              "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
+          "att_val": {  # (B,T,V)
+            "class": "reinterpret_data", "from": ["base:encoder"], "set_dim_tags": {
+              "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
         })
 
     else:
@@ -233,7 +235,7 @@ def add_attention(net_dict, attention_type):
           "class": "combine", "kind": "add", "from": ["segment_lens1", "const_right_win_size"]},
         "seq_lens": {"class": "length", "from": "base:encoder"},
         "max_length": {"class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
-        "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens1"], "kind": "add"},
+        "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens2"], "kind": "add"},
         "greater_than_length": {"class": "compare", "from": ["last_seg_idx", "seq_lens"], "kind": "greater_equal"},
         "segment_lens": {
           "class": "switch", "condition": "greater_than_length", "true_from": "max_length",
