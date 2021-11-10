@@ -71,7 +71,9 @@ def add_attention(net_dict, attention_type):
     # use an MLP to calculate the energies
     net_dict["output"]["unit"].update({
       'att_energy_in': {  # (B, t_att, D)
-        "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": eval("EncKeyTotalDim")},
+        "class": "combine", "kind": "add",
+        "from": ["att_ctx" if not att_weight_feedback else "base:enc_ctx", "att_query"],
+        "n_out": eval("EncKeyTotalDim")},
       "energy_tanh": {
         "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
       "att_energy": {  # (B, t_att, 1)
@@ -93,11 +95,13 @@ def add_attention(net_dict, attention_type):
   # will try to fix it in the future. The math behind both cases is the same, just using different layers.
   if att_area == "win" and att_win_size == "full":
     # calculate attention over all encoder frames
-    net_dict["output"]["unit"]['att'] = {"class": "generic_attention", "weights": "att_weights", "base": "att_val"}
+    net_dict["output"]["unit"]['att'] = {"class": "generic_attention", "weights": "att_weights",
+                                         "base": "att_val" if not att_weight_feedback else "base:enc_val"}
   else:
     # calculate attention in all other cases
     net_dict["output"]["unit"].update({
-      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1", "red2": -1, "var1": "f",
+      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1", "red2": "spatial:-1",
+               "var1": "f",
                "var2": "static:0"},  # (B, 1, V)
       "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
     })
@@ -122,18 +126,38 @@ def add_attention(net_dict, attention_type):
         "att_val": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,V],
       })
     elif att_win_size == "full":
-      # in this case, we calculate the attention over the whole encoder sequence
-      net_dict["output"]["unit"].update({
-        "att_ctx0": {  # (B, T, D)
-          "class": "linear", "from": "base:encoder", "activation": None, "with_bias": False,
-          "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
-        "att_ctx": {
-          "class": "reinterpret_data", "from": "att_ctx0", "set_dim_tags": {
-            "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
-        "att_val": {  # (B,T,V)
-          "class": "reinterpret_data", "from": "base:encoder", "set_dim_tags": {
-            "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
-      })
+      if att_weight_feedback and att_type == "mlp":
+        net_dict.update({
+          "enc_ctx": {  # (B, T, D)
+            "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
+            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
+          "enc_val": {"class": "copy", "from": ["encoder"]}, })
+
+        net_dict.update({
+          "inv_fertility": {
+            "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1},
+        })
+        net_dict["output"]["unit"].update({
+          "weight_feedback": {
+            "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
+            "n_out": eval("EncKeyTotalDim")},
+          "accum_att_weights": {
+            "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+            "eval": "source(0) + source(1) * source(2) * 0.5",
+            "out_type": {"dim": 1, "shape": (None, 1)}},
+        })
+        net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
+      else:
+          net_dict["output"]["unit"].update({
+            "att_ctx0": {  # (B, T, D)
+              "class": "linear", "from": "base:encoder", "activation": None, "with_bias": False,
+              "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}, "att_ctx": {
+              "class": "reinterpret_data", "from": "att_ctx0", "set_dim_tags": {
+                "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}}, "att_val": {  # (B,T,V)
+              "class": "reinterpret_data", "from": "base:encoder", "set_dim_tags": {
+                "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
+        })
+
     else:
       raise ValueError("att_win_size needs to be an integer or 'full'")
 
