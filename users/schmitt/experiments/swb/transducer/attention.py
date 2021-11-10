@@ -240,36 +240,84 @@ def add_attention(net_dict, attention_type):
           "false_from": "segment_lens2"},
          })
 
-    if mask_att is True:
-      # in this case, we create a layer "att_unmasked" which is the attention vector over the previous segment
-      net_dict["output"]["unit"].update({
-        "att_masked": {
-          "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
-          "unit": {"class": "copy", "from": "data"}},
-        "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}, })
-
     if att_seg_use_emb and (att_seg_left_size or att_seg_right_size):
       # in this case, we add an one-hot embedding to the encoder frames, indicating whether they belong to the
       # current segment or not
       if att_seg_left_size:
+        # first in-segment-index of slice_nd output
         net_dict["output"]["unit"]["segment_left_index"] = {
           "class": "combine", "from": ["segment_starts0", "segment_starts"], "kind": "sub"
         }
+        # the length of the segment (without additional window)
         net_dict["output"]["unit"]["real_seg_len"] = {"class": "combine",
           "from": [":i", "segment_starts0"], "kind": "sub"}
       else:
+        # first in-segment-index of slice_nd output
         net_dict["output"]["unit"]["segment_left_index"] = {"class": "constant", "value": 0}
+        # the length of the segment (without additional window)
         net_dict["output"]["unit"]["real_seg_len"] = {"class": "combine", "from": [":i", "segment_starts"],
                                                       "kind": "sub"}
+      # last in-segment-index of slice_nd output
       net_dict["output"]["unit"]["segment_right_index"] = {"class": "combine",
         "from": ["segment_left_index", "real_seg_len"], "kind": "add"}
+
+      # 'segments' is redefined here, therefore we need to rename the existing layer
       net_dict["output"]["unit"]["segments0"] = net_dict["output"]["unit"]["segments"].copy()
+
       net_dict["output"]["unit"].update({
-        "segment_indices": {"class": "range_in_axis", "from": "segments0", "axis": "dyn:-1", "is_output_layer": True},
-        "is_in_segment": {"class": "compare", "from": ["segment_left_index", "segment_indices", "segment_right_index"],
-                          "kind": "less_equal"},
-        "embedding0": {"class": "switch", "condition": "is_in_segment", "true_from": 0.0, "false_from": 1.0},
-        "embedding": {"class": "expand_dims", "from": "embedding0", "axis": -1},
-          "embedding_rev0": {"class": "switch", "condition": "is_in_segment", "true_from": 1.0, "false_from": 0.0},
-          "embedding_rev": {"class": "expand_dims", "from": "embedding_rev0", "axis": -1},
-          "segments": {"class": "copy", "from": ["segments0", "embedding", "embedding_rev"], "is_output_layer": True}})
+        "segment_indices": {"class": "range_in_axis", "from": "segments0", "axis": "dyn:-1"},
+        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
+        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
+        "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
+        "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
+        # define 'embedding0' below
+        "segments": {"class": "copy", "from": ["segments0", "embedding0"], "is_output_layer": True},
+
+      })
+
+      def get_one_hot_embedding(nd, idx):
+        return {"class": "copy", "from": ["const0.0" if i != idx else "const1.0" for i in range(nd)]}
+
+      if att_seg_emb_size >= 2:
+        conditions = {
+          "is_in_segment": {
+            "class": "compare", "from": ["segment_left_index", "segment_indices", "segment_right_index"],
+            "kind": "less_equal"},
+        }
+      if att_seg_emb_size >= 3:
+        conditions.update({
+          "left_of_segment": {
+            "class": "compare", "from": ["segment_left_index", "segment_indices"], "kind": "greater"
+          }
+        })
+      if att_seg_emb_size == 4:
+        conditions = dict({
+          "is_cur_step": {
+            "class": "compare", "from": ["segment_indices", "segment_right_index"], "kind": "equal"
+          }, **conditions
+        })
+
+      net_dict["output"]["unit"].update(conditions)
+      for i in range(att_seg_emb_size):
+        net_dict["output"]["unit"]["emb" + str(i)] = get_one_hot_embedding(att_seg_emb_size, i)
+
+      # TODO: this condition is due to some legacy models which still need to do search
+      # the legacy model used 2D embedding and used [0,1] in case that the frame was in the segment
+      # this new model uses [1,0]
+      if att_seg_emb_size > 2:
+        for i, cond in enumerate(conditions):
+          if i == len(conditions) - 1:
+            net_dict["output"]["unit"].update({
+              "embedding" + str(i): {
+                "class": "switch", "condition": cond, "true_from": "emb" + str(i),
+                "false_from": "emb" + str(i+1)},
+            })
+          else:
+            net_dict["output"]["unit"].update({
+              "embedding" + str(i): {
+                "class": "switch", "condition": cond, "true_from": "emb" + str(i),
+                "false_from": "embedding" + str(i + 1)}, })
+      else:
+        net_dict["output"]["unit"].update({
+          "embedding0": {
+            "class": "switch", "condition": "is_in_segment", "true_from": "emb1", "false_from": "emb0"}, })
