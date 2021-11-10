@@ -214,33 +214,45 @@ def add_attention(net_dict, attention_type):
         idx = 0
       else:
         idx = 1
-      net_dict["output"]["unit"]["const_left_win_size"] = {"class": "constant", "value": att_seg_left_size}
       net_dict["output"]["unit"]["segment_starts" + str(idx)] = net_dict["output"]["unit"]["segment_starts"].copy()
       if att_seg_clamp_size is None:
         net_dict["output"]["unit"]["segment_starts" + str(idx)]["false_from"] = "prev:segment_starts" + str(idx)
+
+      if type(att_seg_left_size) == int:
+        net_dict["output"]["unit"].update({
+          "const_left_win_size": {"class": "constant", "value": att_seg_left_size},
+        })
+      elif att_seg_left_size == "full":
+        net_dict["output"]["unit"].update({
+          "const_left_win_size": {"class": "copy", "from": "segment_starts" + str(idx)}, })
       net_dict["output"]["unit"].update({
         "segment_starts" + str(idx + 1): {
           "class": "combine", "from": ["segment_starts" + str(idx), "const_left_win_size"], "kind": "sub"},
-        "less_than_0": {"class": "compare", "from": "segment_starts" + str(idx+1), "value": 0, "kind": "less"},
+        "less_than_0": {"class": "compare", "from": "segment_starts" + str(idx + 1), "value": 0, "kind": "less"},
         "segment_starts": {
           "class": "switch", "condition": "less_than_0", "true_from": 0,
-          "false_from": "segment_starts" + str(idx+1)}, })
+          "false_from": "segment_starts" + str(idx + 1)}, })
 
     if att_seg_right_size is not None:
       # in this case, we add a specified number of frames on the right side of the segment
       net_dict["output"]["unit"]["segment_lens1"] = net_dict["output"]["unit"]["segment_lens"].copy()
-      net_dict["output"]["unit"]["const_right_win_size"] = {"class": "constant", "value": att_seg_right_size}
-      net_dict["output"]["unit"].update({
-        "segment_lens2": {
-          "class": "combine", "kind": "add", "from": ["segment_lens1", "const_right_win_size"]},
-        "seq_lens": {"class": "length", "from": "base:encoder"},
-        "max_length": {"class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
-        "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens2"], "kind": "add"},
-        "greater_than_length": {"class": "compare", "from": ["last_seg_idx", "seq_lens"], "kind": "greater_equal"},
-        "segment_lens": {
-          "class": "switch", "condition": "greater_than_length", "true_from": "max_length",
-          "false_from": "segment_lens2"},
-         })
+      net_dict["output"]["unit"]["seq_lens"] = {"class": "length", "from": "base:encoder"}
+      if type(att_seg_right_size) == int:
+        net_dict["output"]["unit"].update({
+          "const_right_win_size": {"class": "constant", "value": att_seg_right_size},
+          "segment_lens2": {
+            "class": "combine", "kind": "add", "from": ["segment_lens1", "const_right_win_size"]},
+          "max_length": {"class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
+          "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens2"], "kind": "add"},
+          "greater_than_length": {"class": "compare", "from": ["last_seg_idx", "seq_lens"], "kind": "greater_equal"},
+          "segment_lens": {
+            "class": "switch", "condition": "greater_than_length", "true_from": "max_length",
+            "false_from": "segment_lens2"}, })
+      elif att_seg_right_size == "full":
+        net_dict["output"]["unit"].update({
+          "segment_lens": {
+            "class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
+           })
 
     if att_seg_use_emb and (att_seg_left_size or att_seg_right_size):
       # in this case, we add an one-hot embedding to the encoder frames, indicating whether they belong to the
@@ -284,20 +296,15 @@ def add_attention(net_dict, attention_type):
         conditions = {
           "is_in_segment": {
             "class": "compare", "from": ["segment_left_index", "segment_indices", "segment_right_index"],
-            "kind": "less_equal"},
-        }
+            "kind": "less_equal"}, }
       if att_seg_emb_size >= 3:
         conditions.update({
           "left_of_segment": {
-            "class": "compare", "from": ["segment_left_index", "segment_indices"], "kind": "greater"
-          }
-        })
+            "class": "compare", "from": ["segment_left_index", "segment_indices"], "kind": "greater"}})
       if att_seg_emb_size == 4:
         conditions = dict({
           "is_cur_step": {
-            "class": "compare", "from": ["segment_indices", "segment_right_index"], "kind": "equal"
-          }, **conditions
-        })
+            "class": "compare", "from": ["segment_indices", "segment_right_index"], "kind": "equal"}, **conditions})
 
       net_dict["output"]["unit"].update(conditions)
       for i in range(att_seg_emb_size):
@@ -311,9 +318,7 @@ def add_attention(net_dict, attention_type):
           if i == len(conditions) - 1:
             net_dict["output"]["unit"].update({
               "embedding" + str(i): {
-                "class": "switch", "condition": cond, "true_from": "emb" + str(i),
-                "false_from": "emb" + str(i+1)},
-            })
+                "class": "switch", "condition": cond, "true_from": "emb" + str(i), "false_from": "emb" + str(i + 1)}, })
           else:
             net_dict["output"]["unit"].update({
               "embedding" + str(i): {
