@@ -34,16 +34,33 @@ def add_attention(net_dict, attention_type):
     return
 
   if mask_att:
+    # in this case, we create a layer "att_unmasked" which is the attention vector over the previous segment
+    net_dict["output"]["unit"].update({
+      "att_masked": {
+        "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
+        "unit": {"class": "copy", "from": "data"}},
+      "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}, })
     att_name = "att_unmasked"
   else:
     att_name = "att"
 
   if "slow_rnn" in att_locations:
+    if type(att_locations) == dict:
+      att_name = att_locations["slow_rnn"]
     net_dict["output"]["unit"]["lm_masked"]["unit"]["subnetwork"]["lstm0"]["from"].append("base:" + att_name)
   if "readout" in att_locations:
+    if type(att_locations) == dict:
+      att_name = att_locations["readout"]
     net_dict["output"]["unit"]["readout_in"]["from"].append(att_name)
   if "label_dist" in att_locations:
+    if type(att_locations) == dict:
+      att_name = att_locations["label_dist"]
     net_dict["output"]["unit"]["label_log_prob"]["from"].append(att_name)
+  if "fast_rnn" in att_locations:
+    if type(att_locations) == dict:
+      att_name = att_locations["fast_rnn"]
+    idx = net_dict["output"]["unit"]["s"]["from"].index("am")
+    net_dict["output"]["unit"]["s"]["from"][idx] = att_name
 
   if att_type == "dot":
     # use the dot-product to calculate the energies
