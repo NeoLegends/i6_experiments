@@ -72,7 +72,7 @@ def add_attention(net_dict, attention_type):
     net_dict["output"]["unit"].update({
       'att_energy_in': {  # (B, t_att, D)
         "class": "combine", "kind": "add",
-        "from": ["att_ctx" if not att_weight_feedback else "base:enc_ctx", "att_query"],
+        "from": ["att_ctx", "att_query"],
         "n_out": eval("EncKeyTotalDim")},
       "energy_tanh": {
         "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
@@ -96,7 +96,7 @@ def add_attention(net_dict, attention_type):
   if att_area == "win" and att_win_size == "full":
     # calculate attention over all encoder frames
     net_dict["output"]["unit"]['att'] = {"class": "generic_attention", "weights": "att_weights",
-                                         "base": "att_val" if not att_weight_feedback else "base:enc_val"}
+                                         "base": "att_val"}
   else:
     # calculate attention in all other cases
     net_dict["output"]["unit"].update({
@@ -105,6 +105,62 @@ def add_attention(net_dict, attention_type):
                "var1": "f", "var2": "static:0"},  # (B, 1, V)
       "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
     })
+
+  # define segment as all frames since the last non-blank output
+  # the last non-blank frame is excluded; the current frame is included
+  net_dict["output"]["unit"].update({
+    "const1": {"class": "constant", "value": 1},
+    "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
+    "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
+    "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
+    "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
+    "segment_starts": {  # (B,)
+      "class": "switch", "condition": "prev:output_is_not_blank", "true_from": ":i",
+      "false_from": "prev:segment_starts", "initial_output": 0},
+    "segment_lens0": {"class": "combine", "kind": "sub", "from": [":i", "segment_starts"]},
+    "segment_lens": {"class": "combine", "kind": "add", "from": ["segment_lens0", "const1"]},  # (B,)
+  })
+
+  if att_seg_use_emb:
+    def get_one_hot_embedding(nd, idx):
+      return {"class": "copy", "from": ["const0.0" if i != idx else "const1.0" for i in range(nd)]}
+
+    if att_seg_emb_size >= 2:
+      conditions = {
+        "is_in_segment": {
+          "class": "compare", "from": ["segment_left_index", "segment_indices", "segment_right_index"],
+          "kind": "less_equal"}, }
+    if att_seg_emb_size >= 3:
+      conditions.update({
+        "left_of_segment": {
+          "class": "compare", "from": ["segment_left_index", "segment_indices"], "kind": "greater"}})
+    if att_seg_emb_size == 4:
+      conditions = dict({
+        "is_cur_step": {
+          "class": "compare", "from": ["segment_indices", "segment_right_index"], "kind": "equal"}, **conditions})
+
+    net_dict["output"]["unit"].update(conditions)
+    for i in range(att_seg_emb_size):
+      net_dict["output"]["unit"]["emb" + str(i)] = get_one_hot_embedding(att_seg_emb_size, i)
+
+    # TODO: this condition is due to some legacy models which still need to do search
+    # the legacy model used 2D embedding and used [0,1] in case that the frame was in the segment
+    # this new model uses [1,0]
+    if att_seg_emb_size > 2:
+      for i, cond in enumerate(conditions):
+        if i == len(conditions) - 1:
+          net_dict["output"]["unit"].update({
+            "embedding" + str(i): {
+              "class": "switch", "condition": cond, "true_from": "emb" + str(i), "false_from": "emb" + str(i + 1)}, })
+        else:
+          net_dict["output"]["unit"].update({
+            "embedding" + str(i): {
+              "class": "switch", "condition": cond, "true_from": "emb" + str(i),
+              "false_from": "embedding" + str(i + 1)}, })
+    else:
+      net_dict["output"]["unit"].update({
+        "embedding0": {
+          "class": "switch", "condition": "is_in_segment", "true_from": "emb1", "false_from": "emb0"}, })
 
   if att_area == "win":
     """Local window attention"""
@@ -146,7 +202,11 @@ def add_attention(net_dict, attention_type):
             "eval": "source(0) + source(1) * source(2) * 0.5",
             "out_type": {"dim": 1, "shape": (None, 1)}},
         })
+        net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
+                                                               in net_dict["output"]["unit"]["att_energy_in"]["from"]]
+        net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
         net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
+
       else:
         net_dict["output"]["unit"].update({
           "att_ctx0": {  # (B, T, D)
@@ -160,6 +220,21 @@ def add_attention(net_dict, attention_type):
               "t": DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")}},
         })
 
+        if att_seg_use_emb:
+          net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
+          net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
+          net_dict["output"]["unit"]["att_ctx"]["from"] = "att_val"
+          net_dict["output"]["unit"].update({
+            "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
+            "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+            "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+            "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+            "att_val": {  # (B,T,V)
+              "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
+                "t": "stag:att_t"}},
+          })
+
+
     else:
       raise ValueError("att_win_size needs to be an integer or 'full'")
 
@@ -169,7 +244,6 @@ def add_attention(net_dict, attention_type):
     # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
     # segment_lens)
     net_dict["output"]["unit"].update({
-      "const1": {"class": "constant", "value": 1},
       "segments": {  # [B,t_sliced,D]
         "class": "slice_nd", "from": "base:encoder", "start": "segment_starts", "size": "segment_lens"},
       "att_ctx0": {"class": "copy", "from": "segments"},
@@ -177,16 +251,6 @@ def add_attention(net_dict, attention_type):
         "class": "linear", "from": "att_ctx0", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim"),
         "L2": eval("l2"), "dropout": 0.2},
       "att_val": {"class": "copy", "from": "segments"}
-    })
-
-    # define segment as all frames since the last non-blank output
-    # the last non-blank frame is excluded; the current frame is included
-    net_dict["output"]["unit"].update({
-      "segment_starts": {  # (B,)
-        "class": "switch", "condition": "prev:output_is_not_blank", "true_from": ":i",
-        "false_from": "prev:segment_starts", "initial_output": 0},
-      "segment_lens0": {"class": "combine", "kind": "sub", "from": [":i", "segment_starts"]},
-      "segment_lens": {"class": "combine", "kind": "add", "from": ["segment_lens0", "const1"]},  # (B,)
     })
 
     if att_seg_clamp_size is not None:
@@ -280,51 +344,6 @@ def add_attention(net_dict, attention_type):
 
       net_dict["output"]["unit"].update({
         "segment_indices": {"class": "range_in_axis", "from": "segments0", "axis": "dyn:-1"},
-        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
-        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
-        "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
-        "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
-        # define 'embedding0' below
         "segments": {"class": "copy", "from": ["segments0", "embedding0"], "is_output_layer": True},
 
       })
-
-      def get_one_hot_embedding(nd, idx):
-        return {"class": "copy", "from": ["const0.0" if i != idx else "const1.0" for i in range(nd)]}
-
-      if att_seg_emb_size >= 2:
-        conditions = {
-          "is_in_segment": {
-            "class": "compare", "from": ["segment_left_index", "segment_indices", "segment_right_index"],
-            "kind": "less_equal"}, }
-      if att_seg_emb_size >= 3:
-        conditions.update({
-          "left_of_segment": {
-            "class": "compare", "from": ["segment_left_index", "segment_indices"], "kind": "greater"}})
-      if att_seg_emb_size == 4:
-        conditions = dict({
-          "is_cur_step": {
-            "class": "compare", "from": ["segment_indices", "segment_right_index"], "kind": "equal"}, **conditions})
-
-      net_dict["output"]["unit"].update(conditions)
-      for i in range(att_seg_emb_size):
-        net_dict["output"]["unit"]["emb" + str(i)] = get_one_hot_embedding(att_seg_emb_size, i)
-
-      # TODO: this condition is due to some legacy models which still need to do search
-      # the legacy model used 2D embedding and used [0,1] in case that the frame was in the segment
-      # this new model uses [1,0]
-      if att_seg_emb_size > 2:
-        for i, cond in enumerate(conditions):
-          if i == len(conditions) - 1:
-            net_dict["output"]["unit"].update({
-              "embedding" + str(i): {
-                "class": "switch", "condition": cond, "true_from": "emb" + str(i), "false_from": "emb" + str(i + 1)}, })
-          else:
-            net_dict["output"]["unit"].update({
-              "embedding" + str(i): {
-                "class": "switch", "condition": cond, "true_from": "emb" + str(i),
-                "false_from": "embedding" + str(i + 1)}, })
-      else:
-        net_dict["output"]["unit"].update({
-          "embedding0": {
-            "class": "switch", "condition": "is_in_segment", "true_from": "emb1", "false_from": "emb0"}, })
