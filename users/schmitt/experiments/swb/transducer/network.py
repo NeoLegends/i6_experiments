@@ -511,6 +511,18 @@ def get_extended_net_dict(pretrain_idx):
 
   net_dict["output"] = get_output_dict(train=True, search=(task != "train"), targetb="targetb")
 
+  if slow_rnn_extra_loss:
+    net_dict.update({
+      "slow_rnn": {"class": "masked_computation", "mask": "output/output_emit",
+                   "from": "output/lm", "unit": {"class": "copy"}},
+      "slow_readout_in": {"class": "linear", "from": ["slow_rnn"],
+                              "activation": None, "n_out": 1000},
+      "slow_readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["slow_readout_in"]},
+      "slow_prob": {
+        "class": "softmax", "from": "slow_readout", "dropout": 0.3,
+        "target": "targetb_masked" if task == "train" else None, "loss": "ce"},
+    })
+
   return net_dict
 
 
