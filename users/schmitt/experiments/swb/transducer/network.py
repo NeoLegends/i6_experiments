@@ -520,3 +520,8 @@ def custom_construction_algo(idx, net_dict):
   if net_dict is not None:
     add_attention(net_dict, _attention_type)
   return net_dict
+
+def custom_construction_algo_alignment(idx, net_dict):
+  # For debugging, use: python3 ./crnn/Pretrain.py config...
+  net_dict = get_net_dict(pretrain_idx=idx)
+  return net_dict

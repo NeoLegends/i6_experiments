@@ -104,13 +104,11 @@ class TransducerSWBBaseConfig:
       custom_construction_algo,
       cf,
       get_dataset_dict,
-      add_attention
     ]
 
     # epilog
     self.network_epilog = [
       "network = get_net_dict(pretrain_idx=None)",
-      "add_attention(network, _attention_type)",
       "pretrain = {'copy_param_mode': 'subset', 'construction_algo': custom_construction_algo}"
     ]
 
@@ -168,10 +166,14 @@ class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
       rna_alignment,
       rna_alignment_out,
       rna_loss_out,
-      get_alignment_net_dict
+      get_alignment_net_dict,
+      custom_construction_algo_alignment
     ]
 
-    self.network_prolog = ["get_net_dict = get_alignment_net_dict"]
+    self.network_prolog = [
+      "get_net_dict = get_alignment_net_dict",
+      "custom_construction_algo = custom_construction_algo_alignment"
+    ]
 
 
 class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
@@ -194,6 +196,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     self.accum_grad_multiple_step = 2
 
     self.function_prolog += [
+      add_attention,
       switchout_target,
       targetb_linear,
       targetb_linear_out,
@@ -202,6 +205,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     ]
 
     self.network_prolog = ["get_net_dict = get_extended_net_dict"]
+    self.network_epilog.insert(1, "add_attention(network, _attention_type)")
 
   def set_for_search(self, dataset_key):
     super().set_for_search(dataset_key)
