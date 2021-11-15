@@ -155,29 +155,52 @@ def add_attention(net_dict, attention_type):
       })
     elif att_win_size == "full":
       if att_weight_feedback and att_type == "mlp":
-        net_dict.update({
-          "enc_ctx": {  # (B, T, D)
-            "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
-            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
-          "enc_val": {"class": "copy", "from": ["encoder"]}, })
-
-        net_dict.update({
-          "inv_fertility": {
-            "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1},
-        })
         net_dict["output"]["unit"].update({
           "weight_feedback": {
             "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
             "n_out": eval("EncKeyTotalDim")},
           "accum_att_weights": {
-            "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+            "class": "eval", "from": ["prev:accum_att_weights", "att_weights"],
             "eval": "source(0) + source(1) * source(2) * 0.5",
             "out_type": {"dim": 1, "shape": (None, 1)}},
         })
-        net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
-                                                               in net_dict["output"]["unit"]["att_energy_in"]["from"]]
-        net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
         net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
+
+        if not att_seg_use_emb:
+          net_dict.update({
+            "enc_ctx": {  # (B, T, D)
+              "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
+              "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
+            "enc_val": {"class": "copy", "from": ["encoder"]},
+            "inv_fertility": {
+              "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1},
+          })
+          net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
+                                                                 in net_dict["output"]["unit"]["att_energy_in"]["from"]]
+          net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
+          net_dict["output"]["unit"]['accum_att_weights']["from"].append("base:inv_fertility")
+        else:
+          net_dict.update({
+            "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"},
+          })
+
+          net_dict["output"]["unit"].update({
+            "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+            "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+            "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]},
+            "inv_fertility": {
+              "class": "linear", "activation": "sigmoid", "with_bias": False,
+              "from": ["base:encoder", "embedding0"], "n_out": 1},
+            "att_ctx": {  # (B, T, D)
+              "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
+              "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}
+          })
+          net_dict["output"]["unit"]['accum_att_weights']["from"].append("inv_fertility")
+          for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
+            if cond in net_dict["output"]["unit"]:
+              net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices"
+                                                          if item == "segment_indices" else item
+                                                          for item in net_dict["output"]["unit"][cond]["from"]]
 
       else:
         net_dict["output"]["unit"].update({
