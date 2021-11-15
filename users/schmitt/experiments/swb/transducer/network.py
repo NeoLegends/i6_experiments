@@ -438,11 +438,18 @@ def get_extended_net_dict(pretrain_idx):
             "class": "subnetwork", "from": "data", "subnetwork": {
               "input_embed": {
                 "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621},
-              "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim, "from": ["input_embed"]},
+              "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim,
+                        "from": [*slow_rnn_inputs] if slow_rnn_inputs else ["input_embed"]},
               "output": {"class": "copy", "from": "lstm0"}}}},
         "lm_embed_masked": {"class": "copy", "from": "lm_masked"},
         "lm_embed_unmask": {"class": "unmask", "from": "lm_embed_masked", "mask": "prev:output_emit"},
         "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
+
+        "prev_non_blank_embed_masked": {
+          "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_out_non_blank",  # in decoding
+          "unit": {
+            "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 128}},
+        "prev_non_blank_embed": {"class": "unmask", "from": "prev_non_blank_embed_masked", "mask": "prev:output_emit"},
 
         "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128},
         # FastRNN: recurrent network which takes current encoder frame, embedding of previous output and output
@@ -452,7 +459,9 @@ def get_extended_net_dict(pretrain_idx):
           "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}},
 
         # joint network: combine FastRNN output and SlowRNN output
-        "readout_in": {"class": "linear", "from": ["s", "lm"], "activation": None, "n_out": 1000},
+        "readout_in": {"class": "linear",
+                       "from": [*readout_inputs] if readout_inputs else ["s", "lm"],
+                       "activation": None, "n_out": 1000},
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
 
         # log-prob for non-blank labels
@@ -461,7 +470,9 @@ def get_extended_net_dict(pretrain_idx):
           "n_out": target_num_labels}, "label_prob": {
           "class": "activation", "from": "label_log_prob", "activation": "exp"},
         # emit log-prob
-        "emit_prob0": {"class": "linear", "from": "s", "activation": None, "n_out": 1, "is_output_layer": True},
+        "emit_prob0": {"class": "linear",
+                       "from": [*emit_prob_inputs] if emit_prob_inputs else "s",
+        "activation": None, "n_out": 1, "is_output_layer": True},
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
         # blank log-prob
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
