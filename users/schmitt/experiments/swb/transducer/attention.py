@@ -28,39 +28,11 @@ def add_attention(net_dict, attention_type):
   :param attention_type: int in [0, 1, 2, ...]
   :return: dict net_dict with added attention mechanism
   """
-
-  if att_locations is None:
-    net_dict["output"]["unit"]["lm_masked"]["unit"]["subnetwork"]["lstm0"]["from"].append("base:am")
-    return
-
-  if mask_att:
-    # in this case, we create a layer "att_unmasked" which is the attention vector over the previous segment
-    net_dict["output"]["unit"].update({
-      "att_masked": {
-        "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
-        "unit": {"class": "copy", "from": "data"}},
-      "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}, })
-    att_name = "att_unmasked"
-  else:
-    att_name = "att"
-
-  if "slow_rnn" in att_locations:
-    if type(att_locations) == dict:
-      att_name = att_locations["slow_rnn"]
-    net_dict["output"]["unit"]["lm_masked"]["unit"]["subnetwork"]["lstm0"]["from"].append("base:" + att_name)
-  if "readout" in att_locations:
-    if type(att_locations) == dict:
-      att_name = att_locations["readout"]
-    net_dict["output"]["unit"]["readout_in"]["from"].append(att_name)
-  if "label_dist" in att_locations:
-    if type(att_locations) == dict:
-      att_name = att_locations["label_dist"]
-    net_dict["output"]["unit"]["label_log_prob"]["from"].append(att_name)
-  if "fast_rnn" in att_locations:
-    if type(att_locations) == dict:
-      att_name = att_locations["fast_rnn"]
-    idx = net_dict["output"]["unit"]["s"]["from"].index("am")
-    net_dict["output"]["unit"]["s"]["from"][idx] = att_name
+  net_dict["output"]["unit"].update({
+    "att_masked": {
+      "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
+      "unit": {"class": "copy", "from": "data"}},
+    "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}, })
 
   if att_type == "dot":
     # use the dot-product to calculate the energies
@@ -82,7 +54,7 @@ def add_attention(net_dict, attention_type):
   # calculate attention weights by applying softmax to the energies
   net_dict["output"]["unit"].update({
     "att_query": {  # (B,D)
-      "class": "linear", "from": "am", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim")},
+      "class": "linear", "from": att_query_in, "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim")},
     'att_weights0': {
       "class": "softmax_over_spatial", "from": 'att_energy', "axis": "spatial:-1",
       "energy_factor": eval("EncKeyPerHeadDim") ** -0.5},
