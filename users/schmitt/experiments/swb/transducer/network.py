@@ -86,15 +86,15 @@ def get_alignment_net_dict(pretrain_idx):
     # Encoder LSTMs added below, resulting in "encoder0".
 
     "encoder": {"class": "copy", "from": "encoder0"},
-    # "enc_ctx0": {
-    #   "class": "linear", "from": "encoder", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim, "L2": l2,
-    #   "dropout": 0.2},
-    # "enc_ctx_win": {"class": "window", "from": "enc_ctx0", "window_size": 5},  # [B,T,W,D]
-    # "enc_val": {"class": "copy", "from": "encoder"},
-    # "enc_val_win": {"class": "window", "from": "enc_val", "window_size": 5},  # [B,T,W,D]
+    "enc_ctx0": {
+      "class": "linear", "from": "encoder", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim, "L2": l2,
+      "dropout": 0.2},
+    "enc_ctx_win": {"class": "window", "from": "enc_ctx0", "window_size": 5},  # [B,T,W,D]
+    "enc_val": {"class": "copy", "from": "encoder"},
+    "enc_val_win": {"class": "window", "from": "enc_val", "window_size": 5},  # [B,T,W,D]
 
-    # "enc_ctx": {
-    #   "class": "linear", "from": "encoder", "activation": "tanh", "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+    "enc_ctx": {
+      "class": "linear", "from": "encoder", "activation": "tanh", "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
 
     "enc_seq_len": {"class": "length", "from": "encoder", "sparse": True},
 
@@ -142,23 +142,23 @@ def get_alignment_net_dict(pretrain_idx):
       "include_eos": True, "back_prop": (eval("task") == "train") and train, "unit": {
         "am": {"class": "copy", "from": "data:source"},
 
-        # "enc_ctx_win": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
-        # "enc_val_win": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,D]
-        # "att_query": {
-        #   "class": "linear", "from": "am", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim},
-        # 'att_energy': {
-        #   "class": "dot", "red1": "f", "red2": "f", "var1": "static:0", "var2": None,
-        #   "from": ['enc_ctx_win', 'att_query']},  # (B, W)
-        # 'att_weights0': {
-        #   "class": "softmax_over_spatial", "axis": "static:0", "from": 'att_energy',
-        #   "energy_factor": EncKeyPerHeadDim ** -0.5},  # (B, W)
-        # 'att_weights1': {
-        #   "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
-        #   "dropout": AttentionDropout},
-        # "att_weights": {"class": "merge_dims", "from": "att_weights1", "axes": "except_time"},
-        # 'att': {
-        #   "class": "dot", "from": ['att_weights', 'enc_val_win'], "red1": "static:0", "red2": "static:0",
-        #   "var1": None, "var2": "f"},  # (B, V)
+        "enc_ctx_win": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
+        "enc_val_win": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,D]
+        "att_query": {
+          "class": "linear", "from": "am", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim},
+        'att_energy': {
+          "class": "dot", "red1": "f", "red2": "f", "var1": "static:0", "var2": None,
+          "from": ['enc_ctx_win', 'att_query']},  # (B, W)
+        'att_weights0': {
+          "class": "softmax_over_spatial", "axis": "static:0", "from": 'att_energy',
+          "energy_factor": EncKeyPerHeadDim ** -0.5},  # (B, W)
+        'att_weights1': {
+          "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
+          "dropout": AttentionDropout},
+        "att_weights": {"class": "merge_dims", "from": "att_weights1", "axes": "except_time"},
+        'att': {
+          "class": "dot", "from": ['att_weights', 'enc_val_win'], "red1": "static:0", "red2": "static:0",
+          "var1": None, "var2": "f"},  # (B, V)
 
         "prev_out_non_blank": {
           "class": "reinterpret_data", "from": "prev:output", "set_sparse_dim": eval("target_num_labels"),
