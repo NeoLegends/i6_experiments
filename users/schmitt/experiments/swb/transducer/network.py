@@ -483,7 +483,7 @@ def get_extended_net_dict(pretrain_idx):
         # obtain probabilities by applying exp
         "output_prob": {
           "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb, "loss": "ce",
-          "loss_opts": {"focal_loss_factor": 2.0}},
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": _label_smoothing, "scale": 1.0}},
 
         'output': {
           'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
@@ -523,16 +523,34 @@ def get_extended_net_dict(pretrain_idx):
   net_dict["output"] = get_output_dict(train=True, search=(task != "train"), targetb="targetb")
 
   if slow_rnn_extra_loss:
+    # add an extra output layer + loss behind the SlowRNN to predict the next non-blank label
     net_dict.update({
       "slow_rnn": {"class": "masked_computation", "mask": "output/output_emit",
-                   "from": "output/lm", "unit": {"class": "copy"}},
+                   "from": "output/lm",
+                   "unit": {"class": "copy", "from": ["data", "output/att"]}},
       "slow_readout_in": {"class": "linear", "from": ["slow_rnn"],
                               "activation": None, "n_out": 1000},
       "slow_readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["slow_readout_in"]},
+      "slow_log_prob": {
+          "class": "linear", "from": "slow_readout", "activation": "log_softmax", "dropout": 0.3,
+          "n_out": target_num_labels},
       "slow_prob": {
-        "class": "softmax", "from": "slow_readout", "dropout": 0.3,
-        "target": "targetb_masked" if task == "train" else None, "loss": "ce"},
+          "class": "activation", "from": "slow_log_prob", "activation": "exp",
+          "target": "targetb_masked" if task == "train" else None,
+          "loss": "ce" if task == "train" else None},
+          "loss_opts": {"focal_loss_factor": 2.0},
     })
+
+  if _boost_emit_loss:
+    # calculate the same loss as in the output layer but only for the emit steps and boost the loss by a factor of 4
+    # this means that at blank steps, the loss has a weight of 1 and in non-blank steps, the loss has a weight of 5
+    network.update({
+      "output_prob_emit": {
+        "class": "masked_computation", "mask": "output/output_emit", "from": ["output/output_prob"],
+        "unit": {"class": "copy", "from": ["data"]}},
+      "boost_emit_loss": {
+        "class": "copy", "from": "output_prob_emit", "target": "targetb_masked", "loss": "ce",
+        "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": _label_smoothing, "scale": 4.0}}})
 
   return net_dict
 
