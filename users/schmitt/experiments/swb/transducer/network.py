@@ -430,16 +430,22 @@ def get_extended_net_dict(pretrain_idx):
       "class": "rec", "from": "encoder", "include_eos": True, "back_prop": (task == "train") and train, "unit": {
         "am": {"class": "copy", "from": "data:source"}, # could make more efficient...
         "prev_out_non_blank": { # this is the previous output
-          "class": "reinterpret_data", "from": "prev:output_", "set_sparse_dim": target_num_labels,
+          "class": "reinterpret_data", "from": "prev:output_",
+          "set_sparse_dim": target_num_labels if not _share_emb else targetb_num_labels,
           "set_sparse": True},
+        "non_blank_embed": {
+          "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
         # SlowRNN: only do computations on the steps where a non-blank label was output
         # Recurrent unit which takes embedding of last label and last attention vector
         "lm_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_out_non_blank",  # in decoding
+          "class": "masked_computation", "mask": "prev:output_emit",
+          "from": "prev_out_non_blank" if not _share_emb else "non_blank_embed",
           "unit": {
             "class": "subnetwork", "from": "data", "subnetwork": {
               "input_embed": {
-                "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621},
+                  "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621,
+                  "is_output_layer": True, "reuse_params": "base:non_blank_embed"
+                } if not _share_emb else {"class": "copy", "from": "data"},
               "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim,
                         "from": [*slow_rnn_inputs] if slow_rnn_inputs else ["input_embed"]},
               "output": {"class": "copy", "from": "lstm0"}}}},
@@ -448,12 +454,17 @@ def get_extended_net_dict(pretrain_idx):
         "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
 
         "prev_non_blank_embed_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_out_non_blank",  # in decoding
-          "unit": {
-            "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 128}},
+          "class": "masked_computation", "mask": "prev:output_emit",
+          "from": "non_blank_embed" if _share_emb else "prev_out_non_blank",
+            "unit":
+              {"class": "copy", "from": "data"} if _share_emb
+                else {"class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 128}
+        },
         "prev_non_blank_embed": {"class": "unmask", "from": "prev_non_blank_embed_masked", "mask": "prev:output_emit"},
 
-        "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128},
+        "prev_out_embed": {
+          "class": "linear", "from": "prev:output_", "activation": None, "n_out": 128} if not _share_emb else {
+          "class": "copy", "from": "non_blank_embed"},
         # FastRNN: recurrent network which takes current encoder frame, embedding of previous output and output
         # from SlowRNN
         "s": {
