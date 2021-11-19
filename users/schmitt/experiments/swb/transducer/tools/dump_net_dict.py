@@ -54,15 +54,19 @@ def main(argv):
 
   # if rnn.engine.is_pretrain_epoch(args.epoch):
   # network = rnn.engine.get_net_dict_for_epoch(args.epoch, config)
-  network = str(returnn.config.network_json_from_config(config))
-  print(network)
+  network = returnn.config.network_json_from_config(config)
   # else:
   #   network = rnn.engine.network.get_net
 
   # json_data = network.to_json_content()
   f = open(args.out, 'w')
-  print(json.dumps(network, indent=2, sort_keys=True), file=f)
-  f.close()
+  f.write("Network dictionary:\n\n")
+  f.write(
+    "\n".join("%s: %s" % (k, v) for k, v in network.items() if k != "output")
+  )
+  # print(json.dumps(network, indent=2, sort_keys=True), file=f)
+  f.write("\n\nNetwork Output:\n\n")
+  f.write("\n".join("%s: %s" % (k, v) for k, v in network["output"]["unit"].items()))
 
   rnn.finalize()
 
