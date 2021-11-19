@@ -377,7 +377,9 @@ def get_extended_net_dict(pretrain_idx):
       "class": "eval", "from": ["ctc_out"], "eval": "safe_log(source(0))", },
 
     "_target_masked": {
-      "class": "masked_computation", "mask": "output/output_emit", "from": "output", "unit": {"class": "copy"}},
+      "class": "masked_computation", "mask": "output/output_emit",
+      "from": "data:targetb" if _scheduled_sampling else "output",
+      "unit": {"class": "copy"}},
     "3_target_masked": {
       "class": "reinterpret_data", "from": "_target_masked", "set_sparse_dim": target_num_labels,
       # we masked blank away
@@ -522,6 +524,17 @@ def get_extended_net_dict(pretrain_idx):
 
   net_dict["output"] = get_output_dict(train=True, search=(task != "train"), targetb="targetb")
 
+  # TODO: what to do during "retrain" when pretraining is disabled by default
+  if _scheduled_sampling and task == "train":
+    if pretrain_idx is None:
+      net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {"gold_mixin_prob": _scheduled_sampling}
+    elif pretrain_idx < 10:
+      net_dict["output"]["unit"]["output"]["scheduled_sampling"] = False
+    else:
+      net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {
+        "gold_mixin_prob": max(_scheduled_sampling, 0.9**pretrain_idx)
+      }
+
   if slow_rnn_extra_loss:
     # add an extra output layer + loss behind the SlowRNN to predict the next non-blank label
     net_dict.update({
@@ -537,8 +550,8 @@ def get_extended_net_dict(pretrain_idx):
       "slow_prob": {
           "class": "activation", "from": "slow_log_prob", "activation": "exp",
           "target": "targetb_masked" if task == "train" else None,
-          "loss": "ce" if task == "train" else None},
-          "loss_opts": {"focal_loss_factor": 2.0},
+          "loss": "ce" if task == "train" else None
+      },
     })
 
   if _boost_emit_loss:
@@ -549,7 +562,9 @@ def get_extended_net_dict(pretrain_idx):
         "class": "masked_computation", "mask": "output/output_emit", "from": ["output/output_prob"],
         "unit": {"class": "copy", "from": ["data"]}},
       "boost_emit_loss": {
-        "class": "copy", "from": "output_prob_emit", "target": "targetb_masked", "loss": "ce",
+        "class": "copy", "from": "output_prob_emit",
+        "target": "targetb_masked" if task == "train" else None,
+        "loss": "ce" if task == "train" else None,
         "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": _label_smoothing, "scale": 4.0}}})
 
   return net_dict
