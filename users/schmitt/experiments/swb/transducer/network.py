@@ -444,7 +444,7 @@ def get_extended_net_dict(pretrain_idx):
             "class": "subnetwork", "from": "data", "subnetwork": {
               "input_embed": {
                   "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621,
-                  "is_output_layer": True, "reuse_params": "base:non_blank_embed"
+                  "is_output_layer": True
                 } if not _share_emb else {"class": "copy", "from": "data"},
               "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": LstmDim,
                         "from": [*slow_rnn_inputs] if slow_rnn_inputs else ["input_embed"]},
@@ -468,7 +468,8 @@ def get_extended_net_dict(pretrain_idx):
         # FastRNN: recurrent network which takes current encoder frame, embedding of previous output and output
         # from SlowRNN
         "s": {
-          "class": "rec", "unit": "nativelstm2", "from": ["am", "prev_out_embed", "lm"], "n_out": 128, "L2": l2,
+          "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs if fast_rnn_inputs else ["am", "prev_out_embed", "lm"],
+          "n_out": 128, "L2": l2,
           "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}},
 
         # joint network: combine FastRNN output and SlowRNN output
@@ -507,7 +508,8 @@ def get_extended_net_dict(pretrain_idx):
           "custom_score_combine": targetb_recomb_recog if task == "search" else None},
         "output_": {
           "class": "eval", "from": "output", "eval": switchout_target,
-          "initial_output": 0, } if task == "train" else {"class": "copy", "from": "output", "initial_output": 0},
+          "initial_output": 0, } if task == "train" and not _scheduled_sampling else {
+          "class": "copy", "from": "output", "initial_output": 0},
 
         "out_str": {
           "class": "eval", "from": ["prev:out_str", "output_emit", "output"], "initial_output": None,
