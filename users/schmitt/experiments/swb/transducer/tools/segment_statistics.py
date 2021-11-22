@@ -23,11 +23,14 @@ def calc_segment_stats(blank_idx, segment):
   seg_total_len = 0
   num_segs = 0
   while dataset.is_less_than_num_seqs(seq_idx):
+    if seq_idx % 1000 == 0:
+      complete_frac = dataset.get_complete_frac(seq_idx)
+      print("Progress: %.02f" % (complete_frac * 100))
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "data")
-    # print(data)
     non_blank_idxs = np.where(data != blank_idx)[0]
     if non_blank_idxs.size == 0:
+      seq_idx += 1
       continue
     else:
       # non_blank_idxs = np.append(non_blank_idxs)
