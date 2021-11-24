@@ -365,6 +365,6 @@ def add_attention(net_dict, attention_type):
 
       net_dict["output"]["unit"].update({
         "segment_indices": {"class": "range_in_axis", "from": "segments0", "axis": "dyn:-1"},
-        "segments": {"class": "copy", "from": ["segments0", "embedding0"], "is_output_layer": True},
+        "segments": {"class": "copy", "from": ["segments0", "embedding0"]},
 
       })
