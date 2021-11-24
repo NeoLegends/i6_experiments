@@ -54,7 +54,7 @@ def add_attention(net_dict, attention_type):
   # calculate attention weights by applying softmax to the energies
   net_dict["output"]["unit"].update({
     "att_query": {  # (B,D)
-      "class": "linear", "from": att_query_in, "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim")},
+      "class": "linear", "from": [att_query_in], "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim")},
     'att_weights0': {
       "class": "softmax_over_spatial", "from": 'att_energy', "axis": "spatial:-1",
       "energy_factor": eval("EncKeyPerHeadDim") ** -0.5},
@@ -62,6 +62,12 @@ def add_attention(net_dict, attention_type):
       "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
       "dropout": eval("AttentionDropout")},
   })
+
+  if att_seg_emb_query:
+    if att_seg_emb_size == 2:
+      net_dict["output"]["unit"]["att_query"]["from"].append("emb1")
+    else:
+      net_dict["output"]["unit"]["att_query"]["from"].append("emb0")
 
   # the following attention calculation has two cases, because I wasn't able to implement it using the same code. I
   # will try to fix it in the future. The math behind both cases is the same, just using different layers.
