@@ -71,18 +71,38 @@ def add_attention(net_dict, attention_type):
 
   # the following attention calculation has two cases, because I wasn't able to implement it using the same code. I
   # will try to fix it in the future. The math behind both cases is the same, just using different layers.
+  # TODO: also, I employed a dirty fix here: during search, the attention vector goes through a redundant switch layer,
+  # TODO: which is conditioned on the previous output. this solves the "buggy beam" of the masked attention layer during search
   if att_area == "win" and att_win_size == "full":
-    # calculate attention over all encoder frames
-    net_dict["output"]["unit"]['att'] = {"class": "generic_attention", "weights": "att_weights",
-                                         "base": "att_val"}
+    if task == "train":
+      # calculate attention over all encoder frames
+      net_dict["output"]["unit"]['att'] = {
+        "class": "generic_attention", "weights": "att_weights", "base": "att_val"}
+    else:
+      net_dict["output"]["unit"]['att0'] = {
+        "class": "generic_attention", "weights": "att_weights", "base": "att_val"}
+      net_dict["output"]["unit"]['att'] = {"class": "switch", "condition": "prev:output_is_not_blank",
+        "true_from": "att0", "false_from": "att0"}
   else:
-    # calculate attention in all other cases
-    net_dict["output"]["unit"].update({
-      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
-              "red2": "static:-1" if att_area == "win" else "dyn:-1",
-               "var1": "f", "var2": "static:0"},  # (B, 1, V)
-      "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
-    })
+    if task == "train":
+      # calculate attention in all other cases
+      net_dict["output"]["unit"].update({
+        'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
+                "red2": "static:-1" if att_area == "win" else "dyn:-1",
+                 "var1": "f", "var2": "static:0"},  # (B, 1, V)
+        "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
+      })
+    else:
+      # calculate attention in all other cases
+      net_dict["output"]["unit"].update({
+        'att0': {
+          "class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
+          "red2": "static:-1" if att_area == "win" else "dyn:-1", "var1": "f", "var2": "static:0"},  # (B, 1, V)
+        "att1": {"class": "merge_dims", "from": "att0", "axes": "except_time"},  # (B,V)
+        "att": {
+          "class": "switch", "condition": "prev:output_is_not_blank",
+          "true_from": "att1", "false_from": "att1"}
+      })
 
   # define segment as all frames since the last non-blank output
   # the last non-blank frame is excluded; the current frame is included
@@ -184,7 +204,11 @@ def add_attention(net_dict, attention_type):
           })
           net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
                                                                  in net_dict["output"]["unit"]["att_energy_in"]["from"]]
-          net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
+          # see explanation above on the "att" layer
+          if task == "train":
+            net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
+          else:
+            net_dict["output"]["unit"]['att0']["base"] = "base:enc_val"
         else:
           net_dict.update({
             "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"},
@@ -209,7 +233,8 @@ def add_attention(net_dict, attention_type):
         net_dict["output"]["unit"].update({
           "att_ctx0": {  # (B, T, D)
             "class": "linear", "from": ["base:encoder"], "activation": None, "with_bias": False,
-            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}, "att_ctx": {
+            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
+          "att_ctx": {
             "class": "reinterpret_data", "from": ["att_ctx0"], "set_dim_tags": {
               "T": key_time_tag}},
           "att_val": {  # (B,T,V)
