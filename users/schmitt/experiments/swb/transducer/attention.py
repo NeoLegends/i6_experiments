@@ -28,6 +28,9 @@ def add_attention(net_dict, attention_type):
   :param attention_type: int in [0, 1, 2, ...]
   :return: dict net_dict with added attention mechanism
   """
+  if not use_attention:
+    return
+
   net_dict["output"]["unit"].update({
     "att_masked": {
       "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
@@ -230,16 +233,18 @@ def add_attention(net_dict, attention_type):
 
       else:
         key_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
+        net_dict.update({
+          "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": key_time_tag}}
+        })
         net_dict["output"]["unit"].update({
           "att_ctx0": {  # (B, T, D)
-            "class": "linear", "from": ["base:encoder"], "activation": None, "with_bias": False,
+            "class": "linear", "from": ["base:encoder_new"], "activation": None, "with_bias": False,
             "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
           "att_ctx": {
-            "class": "reinterpret_data", "from": ["att_ctx0"], "set_dim_tags": {
-              "T": key_time_tag}},
+            "class": "copy", "from": ["att_ctx0"]},
           "att_val": {  # (B,T,V)
-            "class": "reinterpret_data", "from": ["base:encoder"], "set_dim_tags": {
-              "T": key_time_tag}}, })
+            "class": "copy", "from": ["base:encoder_new"]}
+          })
 
         if att_seg_use_emb and att_seg_emb_size:
           net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
