@@ -331,12 +331,14 @@ def get_extended_net_dict(pretrain_idx):
     # Lingvo: ep.conv_filter_shapes = [(3, 3, 1, 32), (3, 3, 32, 32)],  ep.conv_filter_strides = [(2, 2), (2, 2)]
     "conv0": {
       "class": "conv", "from": "source0", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
-      "with_bias": True},  # (T,40,32)
-    "conv0p": {"class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv0"},  # (T,20,32)
+      "with_bias": True, "auto_use_channel_first": False},  # (T,40,32)
+    "conv0p": {"class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv0",
+      "use_channel_first": False},  # (T,20,32)
     "conv1": {
       "class": "conv", "from": "conv0p", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
-      "with_bias": True},  # (T,20,32)
-    "conv1p": {"class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv1"},  # (T,10,32)
+      "with_bias": True, "auto_use_channel_first": False},  # (T,20,32)
+    "conv1p": {"class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv1",
+      "use_channel_first": False},  # (T,10,32)
     "conv_merged": {"class": "merge_dims", "from": "conv1p", "axes": "static"},  # (T,320)
 
     # Encoder LSTMs added below, resulting in "encoder0".
