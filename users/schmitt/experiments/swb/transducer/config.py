@@ -1,6 +1,7 @@
 from .network import *
 from .attention import *
-from i6_experiments.users.schmitt.experiments.swb.dataset import *
+from i6_experiments.users.schmitt.experiments.swb.dataset import cf
+from i6_experiments.users.schmitt.experiments.swb import dataset
 from i6_experiments.users.schmitt.recombination import *
 from i6_experiments.users.schmitt.rna import *
 from i6_experiments.users.schmitt.specaugment import *
@@ -15,7 +16,7 @@ class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
                alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
-               _attention_type=0, post_config={}):
+               _attention_type=0, post_config={}, use_phonemes=False):
 
     self.post_config = post_config
 
@@ -89,6 +90,13 @@ class TransducerSWBBaseConfig:
     # prolog
     self.import_prolog = ["from returnn.tf.util.data import DimensionTag", "import os", "import numpy",
                           "from subprocess import check_output, CalledProcessError"]
+
+    # self.use_phonemes = use_phonemes
+    if use_phonemes:
+      get_dataset_dict = dataset.get_dataset_dict_phonemes
+    else:
+      get_dataset_dict = dataset.get_dataset_dict
+
     self.function_prolog = [
       summary,
       _mask,
@@ -112,11 +120,17 @@ class TransducerSWBBaseConfig:
       "pretrain = {'copy_param_mode': 'subset', 'construction_algo': custom_construction_algo}"
     ]
 
-    self.dataset_epilog = [
-      "train = get_dataset_dict('train')",
-      "dev = get_dataset_dict('cv')",
-      "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
-    ]
+    if use_phonemes:
+      self.dataset_epilog = [
+        "train = get_dataset_dict_phonemes('train')",
+        "dev = get_dataset_dict_phonemes('cv')",
+        "eval_datasets = {'devtrain': get_dataset_dict_phonemes('devtrain')}"
+      ]
+    else:
+      self.dataset_epilog = [
+        "train = get_dataset_dict('train')",
+        "dev = get_dataset_dict('cv')",
+        "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"]
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
