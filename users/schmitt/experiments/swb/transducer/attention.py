@@ -37,13 +37,20 @@ def add_attention(net_dict, attention_type):
       "unit": {"class": "copy", "from": "data"}},
     "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}, })
 
+  att_heads_tag = Dim(kind=Dim.Types.Spatial, description="att_heads", dimension=AttNumHeads)
   if att_type == "dot":
+    assert AttNumHeads == 1
     # use the dot-product to calculate the energies
-    net_dict["output"]["unit"].update({'att_energy': {  # (B, t_att, 1)
-      "class": "dot", "red1": "f", "red2": "f", "var1": "stag:att_t", "var2": None,
-      "from": ['att_ctx', 'att_query'],
-      "add_var2_if_empty": False
-    }})
+    net_dict["output"]["unit"].update({
+      'att_energy0': {  # (B, t_att, 1)
+        "class": "dot", "red1": "f", "red2": "f", "var1": "stag:att_t", "var2": None,
+        "from": ['att_ctx', 'att_query'],
+        "add_var2_if_empty": False},
+      "att_energy1": {
+        "class": "expand_dims", "from": "att_energy0", "axis": "f"
+      },
+      "att_energy": {"class": "reinterpret_data", "from": "att_energy1", "set_dim_tags": {"f": att_heads_tag}}
+    })
   elif att_type == "mlp":
     # use an MLP to calculate the energies
     net_dict["output"]["unit"].update({
@@ -54,8 +61,8 @@ def add_attention(net_dict, attention_type):
       "energy_tanh": {
         "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
       "att_energy0": {  # (B, t_att, 1)
-        "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": 1},
-      "att_energy": {"class": "squeeze", "from": "att_energy0", "axis": "dim:1"}
+        "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": AttNumHeads},
+      "att_energy": {"class": "reinterpret_data", "from": "att_energy0", "set_dim_tags": {"f": att_heads_tag}}
      })
   # calculate attention weights by applying softmax to the energies
   net_dict["output"]["unit"].update({
@@ -67,6 +74,10 @@ def add_attention(net_dict, attention_type):
     'att_weights': {
       "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
       "dropout": eval("AttentionDropout")},
+    "att_val_split0": {
+      "class": "split_dims", "axis": "f", "dims": (AttNumHeads, EncValuePerHeadDim), "from": "att_val"},
+    "att_val_split": {
+      "class": "reinterpret_data", "from": "att_val_split0", "set_dim_tags": {"dim:" + str(AttNumHeads): att_heads_tag}}
   })
 
   if att_seg_emb_query:
@@ -80,19 +91,20 @@ def add_attention(net_dict, attention_type):
   if task == "train":
     # calculate attention in all other cases
     net_dict["output"]["unit"].update({
-      'att': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "stag:att_t",
-              "red2": "stag:att_t",
+      'att0': {"class": "dot", "from": ["att_val_split", 'att_weights'], "reduce": "stag:att_t",
                "var1": "f", "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
+      "att": {"class": "merge_dims", "axes": "except_time", "from": "att0"}
     })
   else:
     # calculate attention in all other cases
     net_dict["output"]["unit"].update({
-      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "stag:att_t",
-              "red2": "stag:att_t",
-               "var1": "f", "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
+      'att0': {
+        "class": "dot", "from": ["att_val", 'att_weights'], "red1": "stag:att_t",
+        "red2": "stag:att_t", "var1": "f", "var2": "dim:" + str(AttNumHeads)},  # (B, 1, V)
+      "att1": {"class": "merge_dims", "axes": "except_time", "from": "att0"},
       "att": {
         "class": "switch", "condition": "prev:output_is_not_blank",
-        "true_from": "att0", "false_from": "att0"}
+        "true_from": "att1", "false_from": "att1"}
     })
 
   # define segment as all frames since the last non-blank output
@@ -240,15 +252,18 @@ def add_attention(net_dict, attention_type):
         if att_seg_use_emb and att_seg_emb_size:
           net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
           net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
-          net_dict["output"]["unit"]["att_ctx"]["from"] = "att_val"
+          net_dict["output"]["unit"]["att_ctx"]["from"] = "att_val2"
           net_dict["output"]["unit"].update({
             "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
             "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
             "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
             "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
-            "att_val": {  # (B,T,V)
+            "att_val2": {  # (B,T,V)
               "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
                 "t": "stag:att_t"}},
+            "att_val": {  # (B, T, D)
+              "class": "linear", "from": ["att_val2"], "activation": None, "with_bias": False,
+              "n_out": eval("EncValueTotalDim"), "L2": eval("l2"), "dropout": 0.2},
           })
 
 
@@ -262,14 +277,16 @@ def add_attention(net_dict, attention_type):
     # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
     # segment_lens)
     net_dict["output"]["unit"].update({
-      "segments": {  # [B,t_sliced,D]
+      "segments0": {  # [B,t_sliced,D]
         "class": "slice_nd", "from": "base:encoder", "start": "segment_starts", "size": "segment_lens"},
-      "att_ctx0": {
-        "class": "reinterpret_data", "from": "segments", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
+      "segments": {
+        "class": "reinterpret_data", "from": "segments0", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
       "att_ctx": {  # [B,D]
-        "class": "linear", "from": "att_ctx0", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim"),
+        "class": "linear", "from": "segments", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim"),
         "L2": eval("l2"), "dropout": 0.2},
-      "att_val": {"class": "reinterpret_data", "from": "segments", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}}
+      "att_val": {"class": "copy", "from": "segments"} if not (att_seg_use_emb and att_seg_emb_size) else {  # (B, T, D)
+        "class": "linear", "from": ["segments"], "activation": None, "with_bias": False,
+        "n_out": eval("EncValueTotalDim"), "L2": eval("l2"), "dropout": 0.2},
     })
 
     if att_seg_clamp_size is not None:
@@ -359,10 +376,10 @@ def add_attention(net_dict, attention_type):
         "from": ["segment_left_index", "real_seg_len"], "kind": "add"}
 
       # 'segments' is redefined here, therefore we need to rename the existing layer
-      net_dict["output"]["unit"]["segments0"] = net_dict["output"]["unit"]["segments"].copy()
+      net_dict["output"]["unit"]["segments1"] = net_dict["output"]["unit"]["segments"].copy()
 
       net_dict["output"]["unit"].update({
-        "segment_indices": {"class": "range_in_axis", "from": "segments0", "axis": "dyn:-1"},
-        "segments": {"class": "copy", "from": ["segments0", "embedding0"]},
+        "segment_indices": {"class": "range_in_axis", "from": "segments1", "axis": "stag:att_t"},
+        "segments": {"class": "copy", "from": ["segments1", "embedding0"]},
 
       })
