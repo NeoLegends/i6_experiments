@@ -40,8 +40,10 @@ def add_attention(net_dict, attention_type):
   if att_type == "dot":
     # use the dot-product to calculate the energies
     net_dict["output"]["unit"].update({'att_energy': {  # (B, t_att, 1)
-      "class": "dot", "red1": "f", "red2": "f", "var1": "spatial:-1", "var2": None,
-      "from": ['att_ctx', 'att_query']}})
+      "class": "dot", "red1": "f", "red2": "f", "var1": "stag:att_t", "var2": None,
+      "from": ['att_ctx', 'att_query'],
+      "add_var2_if_empty": False
+    }})
   elif att_type == "mlp":
     # use an MLP to calculate the energies
     net_dict["output"]["unit"].update({
@@ -51,15 +53,16 @@ def add_attention(net_dict, attention_type):
         "n_out": eval("EncKeyTotalDim")},
       "energy_tanh": {
         "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
-      "att_energy": {  # (B, t_att, 1)
+      "att_energy0": {  # (B, t_att, 1)
         "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": 1},
-       })
+      "att_energy": {"class": "squeeze", "from": "att_energy0", "axis": "dim:1"}
+     })
   # calculate attention weights by applying softmax to the energies
   net_dict["output"]["unit"].update({
     "att_query": {  # (B,D)
       "class": "linear", "from": [att_query_in], "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim")},
     'att_weights0': {
-      "class": "softmax_over_spatial", "from": 'att_energy', "axis": "spatial:-1",
+      "class": "softmax_over_spatial", "from": 'att_energy', "axis": "stag:att_t",
       "energy_factor": eval("EncKeyPerHeadDim") ** -0.5},
     'att_weights': {
       "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
@@ -72,40 +75,25 @@ def add_attention(net_dict, attention_type):
     else:
       net_dict["output"]["unit"]["att_query"]["from"].append("emb0")
 
-  # the following attention calculation has two cases, because I wasn't able to implement it using the same code. I
-  # will try to fix it in the future. The math behind both cases is the same, just using different layers.
   # TODO: also, I employed a dirty fix here: during search, the attention vector goes through a redundant switch layer,
   # TODO: which is conditioned on the previous output. this solves the "buggy beam" of the masked attention layer during search
-  if att_area == "win" and att_win_size == "full":
-    if task == "train":
-      # calculate attention over all encoder frames
-      net_dict["output"]["unit"]['att'] = {
-        "class": "generic_attention", "weights": "att_weights", "base": "att_val"}
-    else:
-      net_dict["output"]["unit"]['att0'] = {
-        "class": "generic_attention", "weights": "att_weights", "base": "att_val"}
-      net_dict["output"]["unit"]['att'] = {"class": "switch", "condition": "prev:output_is_not_blank",
-        "true_from": "att0", "false_from": "att0"}
+  if task == "train":
+    # calculate attention in all other cases
+    net_dict["output"]["unit"].update({
+      'att': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "stag:att_t",
+              "red2": "stag:att_t",
+               "var1": "f", "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
+    })
   else:
-    if task == "train":
-      # calculate attention in all other cases
-      net_dict["output"]["unit"].update({
-        'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
-                "red2": "static:-1" if att_area == "win" else "dyn:-1",
-                 "var1": "f", "var2": "static:0"},  # (B, 1, V)
-        "att": {"class": "merge_dims", "from": "att0", "axes": "except_time"}  # (B,V)
-      })
-    else:
-      # calculate attention in all other cases
-      net_dict["output"]["unit"].update({
-        'att0': {
-          "class": "dot", "from": ["att_val", 'att_weights'], "red1": "spatial:-1",
-          "red2": "static:-1" if att_area == "win" else "dyn:-1", "var1": "f", "var2": "static:0"},  # (B, 1, V)
-        "att1": {"class": "merge_dims", "from": "att0", "axes": "except_time"},  # (B,V)
-        "att": {
-          "class": "switch", "condition": "prev:output_is_not_blank",
-          "true_from": "att1", "false_from": "att1"}
-      })
+    # calculate attention in all other cases
+    net_dict["output"]["unit"].update({
+      'att0': {"class": "dot", "from": ["att_val", 'att_weights'], "red1": "stag:att_t",
+              "red2": "stag:att_t",
+               "var1": "f", "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
+      "att": {
+        "class": "switch", "condition": "prev:output_is_not_blank",
+        "true_from": "att0", "false_from": "att0"}
+    })
 
   # define segment as all frames since the last non-blank output
   # the last non-blank frame is excluded; the current frame is included
@@ -166,6 +154,7 @@ def add_attention(net_dict, attention_type):
   if att_area == "win":
     """Local window attention"""
     if type(att_win_size) == int:
+      att_time_tag = Dim(kind=Dim.Types.Spatial, description="att_t", dimension=att_win_size)
       # In this case, the local window has a given fixed size
 
       # extract the window inside the encoder (more efficient than doing in inside the decoder)
@@ -178,11 +167,14 @@ def add_attention(net_dict, attention_type):
         "enc_val_win": {"class": "window", "from": "enc_val", "window_size": att_win_size},  # [B,T,W,V]
       })
       # context and value are just the windows at the corresponding step in the decoder
-      net_dict["output"]["unit"].update(
-        {"att_ctx": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
-         "att_val": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,V],
+      net_dict["output"]["unit"].update({
+        "att_ctx0": {"class": "gather_nd", "from": "base:enc_ctx_win", "position": ":i"},  # [B,W,D]
+        "att_ctx": {"class": "reinterpret_data", "from": "att_ctx0", "set_dim_tags": {"stag:enc_ctx_win:window": att_time_tag}},
+        "att_val0": {"class": "gather_nd", "from": "base:enc_val_win", "position": ":i"},  # [B,W,V],
+        "att_val": {"class": "reinterpret_data", "from": "att_val0", "set_dim_tags": {"stag:enc_val_win:window": att_time_tag}},
       })
     elif att_win_size == "full":
+      att_time_tag = Dim(kind=Dim.Types.Spatial, description="att_t")
       if att_weight_feedback and att_type == "mlp":
         net_dict.update({
           "inv_fertility": {
@@ -232,9 +224,8 @@ def add_attention(net_dict, attention_type):
                                                           for item in net_dict["output"]["unit"][cond]["from"]]
 
       else:
-        key_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
         net_dict.update({
-          "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": key_time_tag}}
+          "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": att_time_tag}}
         })
         net_dict["output"]["unit"].update({
           "att_ctx0": {  # (B, T, D)
@@ -267,16 +258,18 @@ def add_attention(net_dict, attention_type):
   else:
     """Segmental Attention: a segment is defined as current frame + all previous blank frames"""
     assert att_area == "seg"
+    att_time_tag = Dim(kind=Dim.Types.Spatial, description="att_t")
     # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
     # segment_lens)
     net_dict["output"]["unit"].update({
       "segments": {  # [B,t_sliced,D]
         "class": "slice_nd", "from": "base:encoder", "start": "segment_starts", "size": "segment_lens"},
-      "att_ctx0": {"class": "copy", "from": "segments"},
+      "att_ctx0": {
+        "class": "reinterpret_data", "from": "segments", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
       "att_ctx": {  # [B,D]
         "class": "linear", "from": "att_ctx0", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim"),
         "L2": eval("l2"), "dropout": 0.2},
-      "att_val": {"class": "copy", "from": "segments"}
+      "att_val": {"class": "reinterpret_data", "from": "segments", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}}
     })
 
     if att_seg_clamp_size is not None:
