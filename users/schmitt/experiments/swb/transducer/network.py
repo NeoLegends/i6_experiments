@@ -344,7 +344,8 @@ def get_extended_net_dict(pretrain_idx):
     # Encoder LSTMs added below, resulting in "encoder0".
 
     # "encoder": {"class": "postfix_in_time", "postfix": 0.0, "from": "encoder0"},
-    "encoder": {"class": "linear", "from": "encoder0", "n_out": 256, "activation": None},
+    "encoder": {
+      "class": "linear", "from": "encoder0", "n_out": EncValueTotalDim // EncValueDecFactor, "activation": None},
     # "enc_ctx0": {
     #   "class": "linear", "from": "encoder", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim},
     # "enc_ctx_win": {"class": "window", "from": "enc_ctx0", "window_size": 5},  # [B,T,W,D]
