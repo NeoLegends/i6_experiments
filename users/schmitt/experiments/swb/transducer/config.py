@@ -151,6 +151,9 @@ class TransducerSWBBaseConfig:
 
     if "EncKeyTotalDim" in kwargs:
       self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
+    if "AttNumHeads" in kwargs:
+      self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
+      self.EncValuePerHeadDim = self.EncValueTotalDim // self.AttNumHeads
 
 
 class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
