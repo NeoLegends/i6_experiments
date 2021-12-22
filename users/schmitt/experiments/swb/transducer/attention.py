@@ -1,5 +1,25 @@
 from enum import Enum
 
+global use_attention
+global DimensionTag
+global att_seg_emb_size
+global att_seg_use_emb
+global att_win_size
+global task
+global EncValueTotalDim
+global EncValueDecFactor
+global att_weight_feedback
+global att_type
+global att_seg_clamp_size
+global att_seg_left_size
+global att_seg_right_size
+global att_area
+global att_query_in
+global att_seg_emb_query
+global AttNumHeads
+global EncValuePerHeadDim
+
+
 
 class AttentionTypes(Enum):
   """The order matters as the functions below use indices for the attention types"""
