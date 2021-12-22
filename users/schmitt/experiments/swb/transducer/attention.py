@@ -257,53 +257,53 @@ def add_attention(net_dict, attention_type):
             "class": "switch", "condition": "less_than_0", "true_from": 0,
             "false_from": "segment_starts" + str(idx + 1)}})
 
-      def add_right_window():
-        if att_seg_right_size is not None:
-          # in this case, we add a specified number of frames on the right side of the segment
-          net_dict["output"]["unit"]["segment_lens1"] = net_dict["output"]["unit"]["segment_lens"].copy()
-          net_dict["output"]["unit"]["seq_lens"] = {"class": "length", "from": "base:encoder"}
-          if type(att_seg_right_size) == int:
-            net_dict["output"]["unit"].update({
-              "const_right_win_size": {"class": "constant", "value": att_seg_right_size}, "segment_lens2": {
-                "class": "combine", "kind": "add", "from": ["segment_lens1", "const_right_win_size"]},
-              "max_length": {"class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
-              "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens2"], "kind": "add"},
-              "greater_than_length": {
-                "class": "compare", "from": ["last_seg_idx", "seq_lens"], "kind": "greater_equal"}, "segment_lens": {
-                "class": "switch", "condition": "greater_than_length", "true_from": "max_length",
-                "false_from": "segment_lens2"}, })
-          elif att_seg_right_size == "full":
-            net_dict["output"]["unit"].update({
-              "segment_lens": {
-                "class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"}, })
-
-      def add_embedding():
-        if att_seg_use_emb and att_seg_emb_size and (att_seg_left_size or att_seg_right_size):
-          # in this case, we add an one-hot embedding to the encoder frames, indicating whether they belong to the
-          # current segment or not
-          if att_seg_left_size:
-            # first in-segment-index of slice_nd output
-            net_dict["output"]["unit"]["segment_left_index"] = {
-              "class": "combine", "from": ["segment_starts0", "segment_starts"], "kind": "sub"}
-            # the length of the segment (without additional window)
-            net_dict["output"]["unit"]["real_seg_len"] = {
-              "class": "combine", "from": [":i", "segment_starts0"], "kind": "sub"}
-          else:
-            # first in-segment-index of slice_nd output
-            net_dict["output"]["unit"]["segment_left_index"] = {"class": "constant", "value": 0}
-            # the length of the segment (without additional window)
-            net_dict["output"]["unit"]["real_seg_len"] = {
-              "class": "combine", "from": [":i", "segment_starts"], "kind": "sub"}
-          # last in-segment-index of slice_nd output
-          net_dict["output"]["unit"]["segment_right_index"] = {
-            "class": "combine", "from": ["segment_left_index", "real_seg_len"], "kind": "add"}
-
-          # 'segments' is redefined here, therefore we need to rename the existing layer
-          net_dict["output"]["unit"]["segments1"] = net_dict["output"]["unit"]["segments"].copy()
-
+    def add_right_window():
+      if att_seg_right_size is not None:
+        # in this case, we add a specified number of frames on the right side of the segment
+        net_dict["output"]["unit"]["segment_lens1"] = net_dict["output"]["unit"]["segment_lens"].copy()
+        net_dict["output"]["unit"]["seq_lens"] = {"class": "length", "from": "base:encoder"}
+        if type(att_seg_right_size) == int:
           net_dict["output"]["unit"].update({
-            "segment_indices": {"class": "range_in_axis", "from": "segments1", "axis": "stag:att_t"},
-            "segments": {"class": "copy", "from": ["segments1", "embedding0"]}})
+            "const_right_win_size": {"class": "constant", "value": att_seg_right_size}, "segment_lens2": {
+              "class": "combine", "kind": "add", "from": ["segment_lens1", "const_right_win_size"]},
+            "max_length": {"class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"},
+            "last_seg_idx": {"class": "combine", "from": ["segment_starts", "segment_lens2"], "kind": "add"},
+            "greater_than_length": {
+              "class": "compare", "from": ["last_seg_idx", "seq_lens"], "kind": "greater_equal"}, "segment_lens": {
+              "class": "switch", "condition": "greater_than_length", "true_from": "max_length",
+              "false_from": "segment_lens2"}, })
+        elif att_seg_right_size == "full":
+          net_dict["output"]["unit"].update({
+            "segment_lens": {
+              "class": "combine", "from": ["seq_lens", "segment_starts"], "kind": "sub"}, })
+
+    def add_embedding():
+      if att_seg_use_emb and att_seg_emb_size and (att_seg_left_size or att_seg_right_size):
+        # in this case, we add an one-hot embedding to the encoder frames, indicating whether they belong to the
+        # current segment or not
+        if att_seg_left_size:
+          # first in-segment-index of slice_nd output
+          net_dict["output"]["unit"]["segment_left_index"] = {
+            "class": "combine", "from": ["segment_starts0", "segment_starts"], "kind": "sub"}
+          # the length of the segment (without additional window)
+          net_dict["output"]["unit"]["real_seg_len"] = {
+            "class": "combine", "from": [":i", "segment_starts0"], "kind": "sub"}
+        else:
+          # first in-segment-index of slice_nd output
+          net_dict["output"]["unit"]["segment_left_index"] = {"class": "constant", "value": 0}
+          # the length of the segment (without additional window)
+          net_dict["output"]["unit"]["real_seg_len"] = {
+            "class": "combine", "from": [":i", "segment_starts"], "kind": "sub"}
+        # last in-segment-index of slice_nd output
+        net_dict["output"]["unit"]["segment_right_index"] = {
+          "class": "combine", "from": ["segment_left_index", "real_seg_len"], "kind": "add"}
+
+        # 'segments' is redefined here, therefore we need to rename the existing layer
+        net_dict["output"]["unit"]["segments1"] = net_dict["output"]["unit"]["segments"].copy()
+
+        net_dict["output"]["unit"].update({
+          "segment_indices": {"class": "range_in_axis", "from": "segments1", "axis": "stag:att_t"},
+          "segments": {"class": "copy", "from": ["segments1", "embedding0"]}})
 
 
     """Segmental Attention: a segment is defined as current frame + all previous blank frames"""
@@ -322,6 +322,11 @@ def add_attention(net_dict, attention_type):
         "att_val": {"class": "copy", "from": "segments"} if not (att_seg_use_emb and att_seg_emb_size) else {  # (B, T, D)
           "class": "linear", "from": ["segments"], "activation": None, "with_bias": False,
           "n_out": EncValueTotalDim // EncValueDecFactor, "L2": eval("l2"), "dropout": 0.2}, })
+
+      add_clamping()
+      add_left_window()
+      add_right_window()
+      add_embedding()
 
   def add_attention_query():
     net_dict["output"]["unit"]["att_query"] = {  # (B,D)
