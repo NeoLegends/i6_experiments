@@ -556,19 +556,19 @@ def get_extended_net_dict(pretrain_idx):
     net_dict.update({
       "slow_rnn": {
         "class": "masked_computation", "mask": "output/output_emit",
-        "from": "output/lm", "unit": {"class": "copy", "from": ["data", "output/att"]}},
+        "from": "output/lm", "unit": {"class": "copy", "from": ["output/prev_non_blank_embed", "data", "output/att", ]}},
       "slow_readout_in": {
         "class": "linear", "from": ["slow_rnn"],
-        "activation": None, "n_out": 1000},
+        "activation": None, "n_out": 1000, "reuse_params": "output/readout_in"},
       "slow_readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["slow_readout_in"]},
       "slow_log_prob": {
-        "class": "linear", "from": "slow_readout", "activation": "log_softmax", "dropout": 0.3,
+        "class": "linear", "from": "slow_readout", "activation": "log_softmax", "dropout": 0.1,
         "n_out": target_num_labels},
       "slow_prob": {
         "class": "activation", "from": "slow_log_prob", "activation": "exp",
         "target": "targetb_masked" if task == "train" else None,
         "loss": "ce" if task == "train" else None,
-        "loss_opts": {"label_smoothing": _label_smoothing}
+        "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": _label_smoothing, "scale": 4.0}
       },
     })
 
