@@ -331,7 +331,7 @@ def add_attention(net_dict, attention_type):
   def add_attention_query():
     net_dict["output"]["unit"]["att_query"] = {  # (B,D)
       "class": "linear", "from": [att_query_in], "activation": None, "with_bias": False,
-      "n_out": eval("EncKeyTotalDim")}
+      "n_out": eval("EncKeyTotalDim"), "is_output_layer": True if task == "train" else False}
     if att_seg_emb_query:
       if att_seg_emb_size == 2:
         net_dict["output"]["unit"]["att_query"]["from"].append("emb1")
@@ -357,15 +357,17 @@ def add_attention(net_dict, attention_type):
           "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
         "att_energy0": {  # (B, t_att, 1)
           "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": AttNumHeads},
-        "att_energy": {"class": "reinterpret_data", "from": "att_energy0", "set_dim_tags": {"f": att_heads_tag}}})
+        "att_energy": {"class": "reinterpret_data", "from": "att_energy0", "set_dim_tags": {"f": att_heads_tag},
+                       "is_output_layer": True if task == "train" else False}})
 
   def add_weights():
     net_dict["output"]["unit"].update({
       'att_weights0': {
         "class": "softmax_over_spatial", "from": 'att_energy', "axis": "stag:att_t",
-        "energy_factor": eval("EncKeyPerHeadDim") ** -0.5}, 'att_weights': {
+        "energy_factor": eval("EncKeyPerHeadDim") ** -0.5},
+      'att_weights': {
         "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
-        "dropout": eval("AttentionDropout")}})
+        "dropout": eval("AttentionDropout"), "is_output_layer": True if task == "train" else False}})
 
   def add_weight_feedback():
     if (att_seg_use_emb and att_seg_emb_size) or not (att_area == "win" and att_win_size == "full"):
