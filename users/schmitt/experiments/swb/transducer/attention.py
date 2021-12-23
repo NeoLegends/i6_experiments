@@ -7,6 +7,7 @@ global att_seg_use_emb
 global att_win_size
 global task
 global EncValueTotalDim
+global EncKeyTotalDim
 global EncValueDecFactor
 global att_weight_feedback
 global att_type
@@ -358,6 +359,18 @@ def add_attention(net_dict, attention_type):
         "att_energy0": {  # (B, t_att, 1)
           "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": AttNumHeads},
         "att_energy": {"class": "reinterpret_data", "from": "att_energy0", "set_dim_tags": {"f": att_heads_tag},
+                       "is_output_layer": True if task == "train" else False}})
+    elif att_type == "mlp_complex":
+      # use more complex MLP to calculate the energies
+      net_dict["output"]["unit"].update({
+        'att_energy_in': {  # (B, t_att, D)
+          "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": eval("EncKeyTotalDim")},
+        "energy_tanh": {"class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
+        "att_energy0": {  # (B, t_att, 1)
+          "class": "linear", "activation": None, "with_bias": True, "from": ["energy_tanh"], "n_out": EncKeyTotalDim},
+        "att_energy1": {  # (B, t_att, 1)
+          "class": "linear", "activation": "tanh", "with_bias": True, "from": ["att_energy0"], "n_out": AttNumHeads},
+        "att_energy": {"class": "reinterpret_data", "from": "att_energy1", "set_dim_tags": {"f": att_heads_tag},
                        "is_output_layer": True if task == "train" else False}})
 
   def add_weights():
