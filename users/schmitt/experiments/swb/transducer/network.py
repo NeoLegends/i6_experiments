@@ -563,11 +563,11 @@ def get_extended_net_dict(pretrain_idx):
   if _scheduled_sampling and task == "train":
     if pretrain_idx is None:
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {"gold_mixin_prob": _scheduled_sampling}
-    elif pretrain_idx < 10:
+    elif pretrain_idx < 36:
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = False
     else:
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {
-        "gold_mixin_prob": max(_scheduled_sampling, 0.9**pretrain_idx)
+        "gold_mixin_prob": max(_scheduled_sampling, 0.99**(pretrain_idx-36))
       }
 
   if slow_rnn_extra_loss:
