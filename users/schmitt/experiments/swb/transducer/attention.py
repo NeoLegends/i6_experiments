@@ -202,11 +202,13 @@ def add_attention(net_dict, attention_type):
           "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
           "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
           "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-          "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]}, "att_val2": {  # (B,T,V)
+          "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+          "att_val2": {  # (B,T,V)
             "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
-              "t": "time"}}, "att_val": {  # (B, T, D)
+              "t": "time"}},
+          "att_val": {  # (B, T, D)
             "class": "linear", "from": ["att_val2"], "activation": None, "with_bias": False,
-            "n_out": EncValueTotalDim // EncValueDecFactor, "L2": eval("l2"), "dropout": 0.2}, })
+            "n_out": int(net_dict["#info"]["dim_frac"] * EncValueTotalDim // EncValueDecFactor), "L2": eval("l2"), "dropout": 0.2}, })
 
     att_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
 
@@ -322,7 +324,7 @@ def add_attention(net_dict, attention_type):
           "L2": eval("l2"), "dropout": 0.2},
         "att_val": {"class": "copy", "from": "segments"} if not (att_seg_use_emb and att_seg_emb_size) else {  # (B, T, D)
           "class": "linear", "from": ["segments"], "activation": None, "with_bias": False,
-          "n_out": EncValueTotalDim // EncValueDecFactor, "L2": eval("l2"), "dropout": 0.2}, })
+          "n_out": int(net_dict["#info"]["dim_frac"] * EncValueTotalDim // EncValueDecFactor), "L2": eval("l2"), "dropout": 0.2}, })
 
       add_clamping()
       add_left_window()
@@ -403,7 +405,7 @@ def add_attention(net_dict, attention_type):
     net_dict["output"]["unit"].update({
       "att_val_split0": {
         "class": "split_dims", "axis": "f",
-        "dims": (AttNumHeads, EncValuePerHeadDim // EncValueDecFactor), "from": "att_val"},
+        "dims": (AttNumHeads, int(net_dict["#info"]["dim_frac"] * EncValueTotalDim // AttNumHeads // EncValueDecFactor)), "from": "att_val"},
       "att_val_split": {
         "class": "reinterpret_data", "from": "att_val_split0",
         "set_dim_tags": {"dim:" + str(AttNumHeads): att_heads_tag}}})
