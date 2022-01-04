@@ -486,8 +486,16 @@ def get_extended_net_dict(pretrain_idx):
         # log-prob for non-blank labels
         "label_log_prob": {
           "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
-          "n_out": target_num_labels}, "label_prob": {
-          "class": "activation", "from": "label_log_prob", "activation": "exp"},
+          "n_out": target_num_labels},
+
+        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
+        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
+        "label_log_prob_c_masked": {"class": "masked_computation", "mask": "is_label", "from": "label_log_prob",
+          "unit": {"class": "subnetwork", "from": "data", "subnetwork": {
+            "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
+            "output": {"class": "copy", "from": "label_log_prob_c"}}}},
+        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
+
         # emit log-prob
         "emit_prob0": {"class": "linear",
                        "from": [*emit_prob_inputs] if emit_prob_inputs else "s",
@@ -495,13 +503,22 @@ def get_extended_net_dict(pretrain_idx):
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
         # blank log-prob
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
+
+        "const_emit_loss_scale": {"class": "constant", "value": emit_loss_scale},
+        "neg_log_prob_emit": {"class": "eval", "from": ["label_log_prob_c", "emit_log_prob", "const_emit_loss_scale"],
+          "eval": "(-source(0) - source(1)) * source(2)"},
+        "neg_log_prob_blank": {"class": "eval", "from": ["blank_log_prob"], "eval": "-source(0)"},
+        "neg_log_prob_c": {"class": "switch", "condition": "is_label", "true_from": "neg_log_prob_emit",
+          "false_from": "neg_log_prob_blank", "loss": "as_is" if task == "train" and efficient_loss else None},
+
         # combine label log-probs and emit log-prob to get final non-blank log-prob
         "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
         # concat non-blank log-probs and blank log-prob
         "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
         # obtain probabilities by applying exp
         "output_prob": {
-          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb, "loss": "ce",
+          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
+          "loss": "ce" if task == "train" and not efficient_loss else None,
           "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": _label_smoothing, "scale": 1.0}},
 
         'output': {
