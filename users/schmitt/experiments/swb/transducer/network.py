@@ -1,4 +1,4 @@
-
+from recipe.i6_core.returnn.config import CodeWrapper
 
 def get_alignment_net_dict(pretrain_idx):
   """
@@ -264,7 +264,7 @@ def get_extended_net_dict(
   # This is important because of sub-epochs and storing the HDF files,
   # to know exactly which HDF files cover the dataset completely.
   # epoch0 = pretrain_idx
-  net_dict = {}
+  net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2}}
 
   # if pretrain_idx is not None:
   #   net_dict["#config"] = {}
@@ -489,7 +489,7 @@ def get_extended_net_dict(
           # "explicit_search_sources": ["prev:u"] if task == "train" else None,
           # "custom_score_combine": targetb_recomb_train if task == "train" else None
           "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" else None,
-          # "custom_score_combine": targetb_recomb_recog if task == "search" else None
+          "custom_score_combine": CodeWrapper("targetb_recomb_recog") if task == "search" else None
         },
         "output_": {
           "class": "eval", "from": "output",
@@ -527,12 +527,12 @@ def get_extended_net_dict(
   # TODO: what to do during "retrain" when pretraining is disabled by default
   if scheduled_sampling and task == "train":
     if pretrain_idx is None:
-      net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {"gold_mixin_prob": _scheduled_sampling}
+      net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {"gold_mixin_prob": scheduled_sampling}
     elif pretrain_idx < 10:
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = False
     else:
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {
-        "gold_mixin_prob": max(_scheduled_sampling, 0.9**pretrain_idx)
+        "gold_mixin_prob": max(scheduled_sampling, 0.9**pretrain_idx)
       }
 
   if slow_rnn_extra_loss:
@@ -573,29 +573,41 @@ def get_extended_net_dict(
 
 
 def custom_construction_algo(idx, net_dict):
-  lr_warmup = list(np.linspace(learning_rate * 0.1, learning_rate, num=10))
-  if idx < len(lr_warmup):
-    net_dict["#config"] = {}
-    net_dict["#config"]["learning_rate"] = lr_warmup[idx]
+  net_dict["#config"] = {}
+  if idx is not None:
+    # learning rate warm up
+    lr_warmup = list(np.linspace(learning_rate * 0.1, learning_rate, num=10))
+    if idx < len(lr_warmup):
+      net_dict["#config"]["learning_rate"] = lr_warmup[idx]
 
+  # encoder construction
   start_num_lstm_layers = 2
   final_num_lstm_layers = 6
-  idx = max(idx, 0) // 6  # Repeat a bit.
-  num_lstm_layers = idx + start_num_lstm_layers
-  idx = num_lstm_layers - final_num_lstm_layers
-  num_lstm_layers = min(num_lstm_layers, final_num_lstm_layers)
+  num_lstm_layers = final_num_lstm_layers
+  if idx is not None:
+    idx = max(idx, 0) // 6  # each index is used 6 times
+    num_lstm_layers = idx + start_num_lstm_layers  # 2, 3, 4, 5, 6 (each for 6 epochs)
+    idx = num_lstm_layers - final_num_lstm_layers
+    num_lstm_layers = min(num_lstm_layers, final_num_lstm_layers)
 
   if final_num_lstm_layers > start_num_lstm_layers:
     start_dim_factor = 0.5
+    # grow_frac values: 0, 1/4, 1/2, 3/4, 1
     grow_frac = 1.0 - float(final_num_lstm_layers - num_lstm_layers) / (final_num_lstm_layers - start_num_lstm_layers)
+    # dim_frac values: 0.5, 5/8, 3/4, 7/8, 1
     dim_frac = start_dim_factor + (1.0 - start_dim_factor) * grow_frac
   else:
     dim_frac = 1.
+  net_dict["#info"].update({
+    "dim_frac": dim_frac, "num_lstm_layers": num_lstm_layers, "pretrain_idx": idx
+  })
 
   time_reduction = [3, 2] if num_lstm_layers >= 3 else [6]
 
-  # Add encoder BLSTM stack.
+  # Add encoder BLSTM stack
   src = "conv_merged"
+  lstm_dim = net_dict["#info"]["lstm_dim"]
+  l2 = net_dict["#info"]["l2"]
   if num_lstm_layers >= 1:
     net_dict.update({
       "lstm0_fw": {"class": "rec", "unit": "nativelstm2", "n_out": int(lstm_dim * dim_frac), "L2": l2, "direction": 1,
@@ -616,13 +628,16 @@ def custom_construction_algo(idx, net_dict):
     src = ["lstm%i_fw" % i, "lstm%i_bw" % i]
   net_dict["encoder0"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
 
-  # net_dict = get_net_dict(pretrain_idx=idx)
-  # if net_dict is not None:
-  #   add_attention(net_dict, _attention_type)
-  # return net_dict
+  # if necessary, include dim_frac in the attention values
+  # TODO check if this is working
+  try:
+    if net_dict["output"]["unit"]["att_val"]["class"] == "linear":
+      net_dict["output"]["unit"]["att_val"]["n_out"] = 2 * int(lstm_dim * dim_frac)
+  except KeyError:
+    pass
 
-  # We use this pretrain construction during the whole training time (epoch0 > num_epochs).
-  if idx > num_epochs:
+  # We use this pretrain construction during the whole training time
+  if idx is not None and idx % epoch_split == 0 and idx > num_epochs:
     # Stop pretraining now.
     return None
 

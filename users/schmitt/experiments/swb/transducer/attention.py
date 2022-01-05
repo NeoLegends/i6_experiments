@@ -1,33 +1,30 @@
 from enum import Enum
+from recipe.i6_core.returnn.config import CodeWrapper
+import copy
 
-global use_attention
-global DimensionTag
-global att_seg_emb_size
-global att_seg_use_emb
-global att_win_size
-global task
-global EncValueTotalDim
-global EncValueDecFactor
-global att_weight_feedback
-global att_type
-global att_seg_clamp_size
-global att_seg_left_size
-global att_seg_right_size
-global att_area
-global att_query_in
-global att_seg_emb_query
-global AttNumHeads
-global EncValuePerHeadDim
+# global use_attention
+# global DimensionTag
+# global att_seg_emb_size
+# global att_seg_use_emb
+# global att_win_size
+# global task
+# global EncValueTotalDim
+# global EncValueDecFactor
+# global att_weight_feedback
+# global att_type
+# global att_seg_clamp_size
+# global att_seg_left_size
+# global att_seg_right_size
+# global att_area
+# global att_query_in
+# global att_seg_emb_query
+# global AttNumHeads
+# global EncValuePerHeadDim
 
-
-
-class AttentionTypes(Enum):
-  """The order matters as the functions below use indices for the attention types"""
-  NO = 0
-  LOCAL_WIN = 1
-
-
-def add_attention(net_dict, attention_type):
+def add_attention(
+  net_dict, att_seg_emb_size, att_seg_use_emb, att_win_size, task, EncValueTotalDim, EncValueDecFactor, EncKeyTotalDim,
+  att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
+  att_seg_emb_query, AttNumHeads, EncValuePerHeadDim, l2, EncKeyPerHeadDim, AttentionDropout):
   """This function expects a network dictionary of an "extended transducer" model and adds a self-attention mechanism
   according to some parameters set in the returnn config.
 
@@ -48,10 +45,11 @@ def add_attention(net_dict, attention_type):
   :param attention_type: int in [0, 1, 2, ...]
   :return: dict net_dict with added attention mechanism
   """
-  if not use_attention:
-    return
 
-  att_heads_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_heads", dimension=AttNumHeads)
+  net_dict = copy.deepcopy(net_dict)
+
+  att_heads_tag = CodeWrapper(
+    "DimensionTag(kind=DimensionTag.Types.Spatial, description='att_heads', dimension=%d)" % AttNumHeads)
 
   def add_segment_information():
     # define segment as all frames since the last non-blank output
@@ -118,14 +116,15 @@ def add_attention(net_dict, attention_type):
 
   def add_local_window():
     """Local window attention"""
-    att_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t", dimension=att_win_size)
+    att_time_tag = CodeWrapper(
+      'DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t", dimension=%d)' % att_win_size)
     # In this case, the local window has a given fixed size
 
     # extract the window inside the encoder (more efficient than doing in inside the decoder)
     net_dict.update({
       "enc_ctx0": {
         "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
-        "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},  # (B,T,D)
+        "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},  # (B,T,D)
       "enc_ctx_win": {"class": "window", "from": "enc_ctx0", "window_size": att_win_size},  # [B,T,W,D]
       "enc_val": {"class": "copy", "from": "encoder"},  # (B,T,V)
       "enc_val_win": {"class": "window", "from": "enc_val", "window_size": att_win_size},  # [B,T,W,V]
@@ -148,7 +147,7 @@ def add_attention(net_dict, attention_type):
       net_dict["output"]["unit"].update({
         "weight_feedback": {
           "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
-          "n_out": eval("EncKeyTotalDim")},
+          "n_out": EncKeyTotalDim},
         "accum_att_weights": {
           "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
           "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": 1, "shape": (None, 1)}}, })
@@ -158,7 +157,7 @@ def add_attention(net_dict, attention_type):
         net_dict.update({
           "enc_ctx": {  # (B, T, D)
             "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
-            "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2},
+            "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
           "enc_val": {"class": "copy", "from": ["encoder"]}, })
         net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
                                                                in net_dict["output"]["unit"]["att_energy_in"]["from"]]
@@ -177,7 +176,7 @@ def add_attention(net_dict, attention_type):
         #   "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
         #   "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]}, "att_ctx": {  # (B, T, D)
         #     "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
-        #     "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}})
+        #     "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}})
         # for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
         #   if cond in net_dict["output"]["unit"]:
         #     net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices" if item == "segment_indices" else item
@@ -189,7 +188,7 @@ def add_attention(net_dict, attention_type):
       net_dict["output"]["unit"].update({
         "att_ctx0": {  # (B, T, D)
           "class": "linear", "from": ["base:encoder_new"], "activation": None, "with_bias": False,
-          "n_out": eval("EncKeyTotalDim"), "L2": eval("l2"), "dropout": 0.2}, "att_ctx": {
+          "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}, "att_ctx": {
           "class": "copy", "from": ["att_ctx0"]}, "att_val": {  # (B,T,V)
           "class": "copy", "from": ["base:encoder_new"]}})
 
@@ -205,9 +204,9 @@ def add_attention(net_dict, attention_type):
             "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
               "t": "time"}}, "att_val": {  # (B, T, D)
             "class": "linear", "from": ["att_val2"], "activation": None, "with_bias": False,
-            "n_out": EncValueTotalDim // EncValueDecFactor, "L2": eval("l2"), "dropout": 0.2}, })
+            "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2}, })
 
-    att_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
+    att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
 
     add_global_without_weight_feedback()
 
@@ -308,7 +307,7 @@ def add_attention(net_dict, attention_type):
 
     """Segmental Attention: a segment is defined as current frame + all previous blank frames"""
     if att_area == "seg":
-      att_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
+      att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
       # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
       # segment_lens)
       net_dict["output"]["unit"].update({
@@ -317,11 +316,11 @@ def add_attention(net_dict, attention_type):
         "segments": {
           "class": "reinterpret_data", "from": "segments0", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
         "att_ctx": {  # [B,D]
-          "class": "linear", "from": "segments", "activation": None, "with_bias": False, "n_out": eval("EncKeyTotalDim"),
-          "L2": eval("l2"), "dropout": 0.2},
+          "class": "linear", "from": "segments", "activation": None, "with_bias": False, "n_out": EncKeyTotalDim,
+          "L2": l2, "dropout": 0.2},
         "att_val": {"class": "copy", "from": "segments"} if not (att_seg_use_emb and att_seg_emb_size) else {  # (B, T, D)
           "class": "linear", "from": ["segments"], "activation": None, "with_bias": False,
-          "n_out": EncValueTotalDim // EncValueDecFactor, "L2": eval("l2"), "dropout": 0.2}, })
+          "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2}, })
 
       add_clamping()
       add_left_window()
@@ -331,7 +330,7 @@ def add_attention(net_dict, attention_type):
   def add_attention_query():
     net_dict["output"]["unit"]["att_query"] = {  # (B,D)
       "class": "linear", "from": [att_query_in], "activation": None, "with_bias": False,
-      "n_out": eval("EncKeyTotalDim"), "is_output_layer": True if task == "train" else False}
+      "n_out": EncKeyTotalDim, "is_output_layer": True if task == "train" else False}
     if att_seg_emb_query:
       if att_seg_emb_size == 2:
         net_dict["output"]["unit"]["att_query"]["from"].append("emb1")
@@ -352,7 +351,7 @@ def add_attention(net_dict, attention_type):
       # use an MLP to calculate the energies
       net_dict["output"]["unit"].update({
         'att_energy_in': {  # (B, t_att, D)
-          "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": eval("EncKeyTotalDim")},
+          "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": EncKeyTotalDim},
         "energy_tanh": {
           "class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
         "att_energy0": {  # (B, t_att, 1)
@@ -364,10 +363,10 @@ def add_attention(net_dict, attention_type):
     net_dict["output"]["unit"].update({
       'att_weights0': {
         "class": "softmax_over_spatial", "from": 'att_energy', "axis": "stag:att_t",
-        "energy_factor": eval("EncKeyPerHeadDim") ** -0.5},
+        "energy_factor": EncKeyPerHeadDim ** -0.5},
       'att_weights': {
         "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
-        "dropout": eval("AttentionDropout"), "is_output_layer": True if task == "train" else False}})
+        "dropout": AttentionDropout, "is_output_layer": True if task == "train" else False}})
 
   def add_weight_feedback():
     if (att_seg_use_emb and att_seg_emb_size) or not (att_area == "win" and att_win_size == "full"):
@@ -382,7 +381,7 @@ def add_attention(net_dict, attention_type):
         "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": AttNumHeads, "shape": (None, AttNumHeads)}},
       "weight_feedback": {
         "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
-        "n_out": eval("EncKeyTotalDim")}})
+        "n_out": EncKeyTotalDim}})
 
     net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
 
@@ -390,7 +389,7 @@ def add_attention(net_dict, attention_type):
     net_dict["output"]["unit"].update({
       "att_val_split0": {
         "class": "split_dims", "axis": "f",
-        "dims": (AttNumHeads, EncValuePerHeadDim // EncValueDecFactor), "from": "att_val"},
+        "dims": (AttNumHeads, -1), "from": "att_val"},
       "att_val_split": {
         "class": "reinterpret_data", "from": "att_val_split0",
         "set_dim_tags": {"dim:" + str(AttNumHeads): att_heads_tag}}})
@@ -443,4 +442,6 @@ def add_attention(net_dict, attention_type):
   add_attention_value_heads()
   add_attention_vector()
   add_masked_attention()
+
+  return net_dict
 

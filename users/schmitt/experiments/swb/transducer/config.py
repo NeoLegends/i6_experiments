@@ -15,7 +15,7 @@ class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
                alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
-               _attention_type=0, post_config={}, task="train"):
+               _attention_type=0, post_config={}, task="train", search_data_key=None, num_epochs=150):
 
     self.post_config = post_config
 
@@ -32,19 +32,22 @@ class TransducerSWBBaseConfig:
     self._alignment = None
 
     # network
-    self._attention_type = _attention_type
-    self.EncKeyTotalDim = 200
-    self.AttNumHeads = 1  # must be 1 for hard-att
-    self.AttentionDropout = 0.1
-    self.l2 = 0.0001
-    self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
-    self.EncValueTotalDim = 2048
-    self.EncValuePerHeadDim = self.EncValueTotalDim // self.AttNumHeads
-    self.lstm_dim = self.EncValueTotalDim // 2
+    # self._attention_type = _attention_type
+    # self.EncKeyTotalDim = 200
+    # self.AttNumHeads = 1  # must be 1 for hard-att
+    # self.AttentionDropout = 0.1
+    # self.l2 = 0.0001
+    # self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
+    # self.EncValueTotalDim = 2048
+    # self.EncValuePerHeadDim = self.EncValueTotalDim // self.AttNumHeads
+    # self.lstm_dim = self.EncValueTotalDim // 2
 
     self.extern_data = {
       "data": {"dim": data_dim},  # Gammatone 40-dim
       "alignment": {"dim": self.targetb_num_labels, "sparse": True}}
+    if task == "search":
+      self.extern_data["targetb"] = {"dim": self.targetb_num_labels, "sparse": True,
+                                              "available_for_inference": False}
 
     time_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='time')"
     output_len_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='output-len')"  # downsampled time
@@ -58,6 +61,7 @@ class TransducerSWBBaseConfig:
     if self.task == "train":
         self.beam_size = 4
     else:
+        self.num_epochs = num_epochs
         self.beam_size = 12
     self.learning_rate = 0.001
     self.min_learning_rate = self.learning_rate / 50.
@@ -107,11 +111,16 @@ class TransducerSWBBaseConfig:
 
     # epilog
 
-    self.dataset_epilog = [
-      "train = get_dataset_dict('train')",
-      "dev = get_dataset_dict('cv')",
-      "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
-    ]
+    if task == "train":
+      # TODO change back to training corpus
+      self.dataset_epilog = [
+        "train = get_dataset_dict('cv')",
+        "dev = get_dataset_dict('cv')",
+        "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
+      ]
+    else:
+      assert search_data_key is not None
+      self.dataset_epilog = ["search_data = get_dataset_dict('%s')" % search_data_key]
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
@@ -120,7 +129,7 @@ class TransducerSWBBaseConfig:
               prolog_list]
     epilog = [epilog_item for k, epilog_list in self.__dict__.items() if k.endswith("_epilog") for epilog_item in
               epilog_list]
-    print(epilog)
+    # print(epilog)
     post_config = self.post_config
 
     return ReturnnConfig(config=config_dict, post_config=post_config, python_prolog=prolog, python_epilog=epilog)
@@ -179,54 +188,55 @@ class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
 
 
 class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
-  def __init__(self, *args, pretrain=True, **kwargs):
+  def __init__(
+    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, enc_val_dim, att_key_dim,
+    att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
+    att_seg_emb_query, att_num_heads, pretrain=True, slow_rnn_extra_loss=False, readout_inputs=None,
+    fast_rnn_inputs=None, slow_rnn_inputs=None, emit_prob_inputs=None, label_smoothing, boost_emit_loss,
+    share_emb, scheduled_sampling, use_attention, use_phonemes, mask_att, **kwargs):
 
     super().__init__(*args, **kwargs)
 
     self._alignment = "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/merboldt_swb_transducer/rna-tf2.blank0.enc6l-grow2l.scratch-lm.rdrop02.lm1-1024.attwb5-drop02.l2_1e_4.mlr50.epoch-150.swap"
 
-    self.batch_size = 10000
+    self.batch_size = 10000 if self.task == "train" else 4000
     chunk_size = 60
     time_red = 6
-  #   self.chunking_epilog = ["""chunking = ({
-  # "data": _chunk_size * _time_red,
-  # "alignment": _chunk_size},{
-  # "data": _chunk_size * _time_red // 2,
-  # "alignment": _chunk_size // 2})"""]
     self.chunking = ({
       "data": chunk_size * time_red, "alignment": chunk_size}, {
       "data": chunk_size * time_red // 2, "alignment": chunk_size // 2})
     self.accum_grad_multiple_step = 2
 
     self.function_prolog += [
-      add_attention,
+      # add_attention,
       switchout_target,
       custom_construction_algo
-      # targetb_linear,
-      # targetb_linear_out,
-      # targetb_search_or_fallback,
     ]
-
-    # self.network_prolog = ["get_net_dict = get_extended_net_dict"]
-    # self.network_epilog.insert(1, "add_attention(network, _attention_type)")
-
+    # TODO check, whether all current combinations of hyperparameters are working for training and search
     self.network = get_extended_net_dict(
-      pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150, enc_val_total_dim=2048,
+      pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150, enc_val_total_dim=enc_val_dim,
       enc_val_dec_factor=1, target_num_labels=self.target_num_labels, target=self.target, task=self.task,
-      targetb_num_labels=self.targetb_num_labels, scheduled_sampling=False, lstm_dim=1024, l2=self.l2,
+      targetb_num_labels=self.targetb_num_labels, scheduled_sampling=False, lstm_dim=1024, l2=0.0001,
       beam_size=self.beam_size, share_emb=False, slow_rnn_inputs=["input_embed", "base:am"],
       fast_rnn_inputs=["prev_out_embed", "lm", "am"],
       targetb_blank_idx=1030, readout_inputs=["s", "lm", "am"], emit_prob_inputs=["s"], label_smoothing=None,
       slow_rnn_extra_loss=False, boost_emit_loss=False
     )
+    if use_attention:
+      self.network = add_attention(
+        self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb, att_win_size=att_win_size,
+        task=self.task, EncValueTotalDim=enc_val_dim, EncValueDecFactor=1, EncKeyTotalDim=att_key_dim,
+        att_weight_feedback=att_weight_feedback, att_type=att_type, att_seg_clamp_size=att_seg_clamp_size,
+        att_seg_left_size=att_seg_left_size, att_seg_right_size=att_seg_right_size, att_area=att_area,
+        att_query_in=att_query_in, att_seg_emb_query=att_seg_emb_query, AttNumHeads=att_num_heads,
+        EncValuePerHeadDim=int(enc_val_dim // att_num_heads), l2=0.0001, AttentionDropout=0.1,
+        EncKeyPerHeadDim=int(att_key_dim // att_num_heads))
 
     if pretrain:
       self.pretrain_epilog = ["pretrain = {'copy_param_mode': 'subset', 'construction_algo': custom_construction_algo}"]
 
     if self.task == "search":
-      self.search_epilog = [
-        "network['output']['unit']['output']['custom_score_combine'] = targetb_recomb_recog"
-      ]
+      self.extern_data[self.target] = {"dim": self.target_num_labels, "sparse": True}
 
 
   def set_for_search(self, dataset_key):
