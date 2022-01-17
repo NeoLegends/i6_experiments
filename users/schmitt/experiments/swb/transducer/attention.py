@@ -197,18 +197,19 @@ def add_attention(net_dict, attention_type):
       if att_seg_use_emb and att_seg_emb_size:
         net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
         net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
-        net_dict["output"]["unit"]["att_ctx"]["from"] = "att_val2"
+        net_dict["output"]["unit"]["att_ctx"]["from"] = ["att_val0", "embedding0"]
         net_dict["output"]["unit"].update({
           "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
           "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
           "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-          "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
-          "att_val2": {  # (B,T,V)
+          # "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+          "att_val": {  # (B,T,V)
             "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
               "t": "time"}},
-          "att_val": {  # (B, T, D)
-            "class": "linear", "from": ["att_val2"], "activation": None, "with_bias": False,
-            "n_out": int(net_dict["#info"]["dim_frac"] * EncValueTotalDim // EncValueDecFactor), "L2": eval("l2"), "dropout": 0.2}, })
+          "att_val1": {  # (B, T, D)
+            "class": "linear", "from": ["att_val0", "embedding0"], "activation": None, "with_bias": False,
+            "n_out": int(net_dict["#info"]["dim_frac"] * EncValueTotalDim // EncValueDecFactor), "L2": eval("l2"), "dropout": 0.2},
+        })
 
     att_time_tag = DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")
 
