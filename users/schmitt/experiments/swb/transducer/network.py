@@ -591,6 +591,20 @@ def get_extended_net_dict(pretrain_idx):
       },
     })
 
+  if emit_extra_loss:
+    net_dict.update({
+      "4_target_masked": {
+        "class": "copy", "from": "_target_masked", "register_as_extern_data": "targetb_masked_1031"},
+      "output_prob_non_blank": {
+        "class": "masked_computation", "mask": "output/output_emit", "from": "output/output_prob",
+        "unit": {"class": "copy", "from": ["data"]}},
+      "output_loss_non_blank": {
+        "class": "copy", "from": "output_prob_non_blank",
+        "target": "targetb_masked_1031" if task == "train" else None,
+        "loss": "ce" if task == "train" else None,
+        "loss_opts": {"focal_loss_factor": 2.0, "scale": emit_extra_loss}},
+    })
+
   return net_dict
 
 
