@@ -81,3 +81,11 @@ def get_dataset_dict(data):
     d.update(partition_epochs_opts)
 
   return d
+
+def get_phoneme_dataset():
+  dataset_dict = {
+    'class': 'ExternSprintDataset',
+    'sprintConfigStr': '--config=/u/schmitt/experiments/transducer/config/rasr-configs/zhou-phon-trans.config --*.LOGFILE=nn-trainer.train.log --*.TASK=1 --*.corpus.segment-order-shuffle=true',
+    'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding'}
+
+  return dataset_dict
