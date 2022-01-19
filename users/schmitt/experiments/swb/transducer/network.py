@@ -253,7 +253,7 @@ def get_extended_net_dict(
   pretrain_idx, learning_rate, num_epochs, enc_val_total_dim, enc_val_dec_factor,
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, share_emb, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
-  label_smoothing, slow_rnn_extra_loss, boost_emit_loss):
+  label_smoothing, slow_rnn_extra_loss, boost_emit_loss, emit_loss_scale, efficient_loss, emit_extra_loss):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
@@ -465,8 +465,16 @@ def get_extended_net_dict(
         # log-prob for non-blank labels
         "label_log_prob": {
           "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
-          "n_out": target_num_labels}, "label_prob": {
-          "class": "activation", "from": "label_log_prob", "activation": "exp"},
+          "n_out": target_num_labels},
+
+        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
+        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
+        "label_log_prob_c_masked": {"class": "masked_computation", "mask": "is_label", "from": "label_log_prob",
+          "unit": {"class": "subnetwork", "from": "data", "subnetwork": {
+            "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
+            "output": {"class": "copy", "from": "label_log_prob_c"}}}},
+        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
+
         # emit log-prob
         "emit_prob0": {"class": "linear",
                        "from": [*emit_prob_inputs] if emit_prob_inputs else "s",
@@ -474,13 +482,22 @@ def get_extended_net_dict(
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
         # blank log-prob
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
+
+        "const_emit_loss_scale": {"class": "constant", "value": emit_loss_scale},
+        "neg_log_prob_emit": {"class": "eval", "from": ["label_log_prob_c", "emit_log_prob", "const_emit_loss_scale"],
+          "eval": "(-source(0) - source(1)) * source(2)"},
+        "neg_log_prob_blank": {"class": "eval", "from": ["blank_log_prob"], "eval": "-source(0)"},
+        "neg_log_prob_c": {"class": "switch", "condition": "is_label", "true_from": "neg_log_prob_emit",
+          "false_from": "neg_log_prob_blank", "loss": "as_is" if task == "train" and efficient_loss else None},
+
         # combine label log-probs and emit log-prob to get final non-blank log-prob
         "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
         # concat non-blank log-probs and blank log-prob
         "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
         # obtain probabilities by applying exp
         "output_prob": {
-          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb, "loss": "ce",
+          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
+          "loss": "ce" if task == "train" and not efficient_loss else None,
           "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 1.0}},
 
         'output': {
@@ -556,18 +573,19 @@ def get_extended_net_dict(
       },
     })
 
-  if boost_emit_loss:
-    # calculate the same loss as in the output layer but only for the emit steps and boost the loss by a factor of 4
-    # this means that at blank steps, the loss has a weight of 1 and in non-blank steps, the loss has a weight of 5
+  if emit_extra_loss:
     net_dict.update({
-      "output_prob_emit": {
-        "class": "masked_computation", "mask": "output/output_emit", "from": ["output/output_prob"],
+      "4_target_masked": {
+        "class": "copy", "from": "_target_masked", "register_as_extern_data": "targetb_masked_1031"},
+      "output_prob_non_blank": {
+        "class": "masked_computation", "mask": "output/output_emit", "from": "output/output_prob",
         "unit": {"class": "copy", "from": ["data"]}},
-      "boost_emit_loss": {
-        "class": "copy", "from": "output_prob_emit",
-        "target": "targetb_masked" if task == "train" else None,
+      "output_loss_non_blank": {
+        "class": "copy", "from": "output_prob_non_blank",
+        "target": "targetb_masked_1031" if task == "train" else None,
         "loss": "ce" if task == "train" else None,
-        "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 4.0}}})
+        "loss_opts": {"focal_loss_factor": 2.0, "scale": emit_extra_loss}},
+    })
 
   return net_dict
 

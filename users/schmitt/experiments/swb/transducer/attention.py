@@ -200,7 +200,8 @@ def add_attention(
           "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
           "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
           "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-          "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]}, "att_val2": {  # (B,T,V)
+          "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+          "att_val2": {  # (B,T,V)
             "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
               "t": "time"}}, "att_val": {  # (B, T, D)
             "class": "linear", "from": ["att_val2"], "activation": None, "with_bias": False,
@@ -441,7 +442,7 @@ def add_attention(
     add_weight_feedback()
   add_attention_value_heads()
   add_attention_vector()
-  add_masked_attention()
+  # add_masked_attention()
 
   return net_dict
 

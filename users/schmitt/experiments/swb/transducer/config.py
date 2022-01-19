@@ -15,7 +15,8 @@ class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
                alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
-               _attention_type=0, post_config={}, task="train", search_data_key=None, num_epochs=150):
+               _attention_type=0, post_config={}, task="train", search_data_key=None, num_epochs=150,
+               label_type="bpe"):
 
     self.post_config = post_config
 
@@ -112,12 +113,15 @@ class TransducerSWBBaseConfig:
     # epilog
 
     if task == "train":
-      # TODO change back to training corpus
-      self.dataset_epilog = [
-        "train = get_dataset_dict('cv')",
-        "dev = get_dataset_dict('cv')",
-        "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
-      ]
+      if label_type == "bpe":
+        self.dataset_epilog = [
+          "train = get_dataset_dict('train')",
+          "dev = get_dataset_dict('cv')",
+          "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
+        ]
+      elif label_type == "phonemes":
+        self.train = get_phoneme_dataset()
+        self.dev = get_phoneme_dataset()
     else:
       assert search_data_key is not None
       self.dataset_epilog = ["search_data = get_dataset_dict('%s')" % search_data_key]
@@ -193,7 +197,8 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
     att_seg_emb_query, att_num_heads, pretrain=True, slow_rnn_extra_loss=False, readout_inputs=None,
     fast_rnn_inputs=None, slow_rnn_inputs=None, emit_prob_inputs=None, label_smoothing, boost_emit_loss,
-    share_emb, scheduled_sampling, use_attention, use_phonemes, mask_att, **kwargs):
+    share_emb, scheduled_sampling, use_attention, use_phonemes, mask_att,
+    emit_extra_loss, efficient_loss, **kwargs):
 
     super().__init__(*args, **kwargs)
 
@@ -220,7 +225,8 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       beam_size=self.beam_size, share_emb=False, slow_rnn_inputs=["input_embed", "base:am"],
       fast_rnn_inputs=["prev_out_embed", "lm", "am"],
       targetb_blank_idx=1030, readout_inputs=["s", "lm", "am"], emit_prob_inputs=["s"], label_smoothing=None,
-      slow_rnn_extra_loss=False, boost_emit_loss=False
+      slow_rnn_extra_loss=False, boost_emit_loss=False, emit_extra_loss=emit_extra_loss,
+      emit_loss_scale=1.0, efficient_loss=efficient_loss
     )
     if use_attention:
       self.network = add_attention(
