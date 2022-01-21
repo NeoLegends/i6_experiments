@@ -188,7 +188,8 @@ def add_attention(
       net_dict["output"]["unit"].update({
         "att_ctx0": {  # (B, T, D)
           "class": "linear", "from": ["base:encoder_new"], "activation": None, "with_bias": False,
-          "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}, "att_ctx": {
+          "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+        "att_ctx": {
           "class": "copy", "from": ["att_ctx0"]}, "att_val": {  # (B,T,V)
           "class": "copy", "from": ["base:encoder_new"]}})
 

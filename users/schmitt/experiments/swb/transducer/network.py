@@ -337,7 +337,7 @@ def get_extended_net_dict(
 
     # "encoder": {"class": "postfix_in_time", "postfix": 0.0, "from": "encoder0"},
     "encoder": {
-      "class": "linear", "from": "encoder0", "n_out": enc_val_total_dim // enc_val_dec_factor, "activation": None} if enc_val_dec_factor != 1 else {
+      "class": "linear", "from": "encoder0", "n_out": enc_val_total_dim // enc_val_dec_factor, "activation": None} if enc_val_dec_factor != 2 else {
       "class": "copy", "from": "encoder0"
     },
 

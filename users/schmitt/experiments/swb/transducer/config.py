@@ -16,7 +16,7 @@ class TransducerSWBBaseConfig:
                alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
                _attention_type=0, post_config={}, task="train", search_data_key=None, num_epochs=150,
-               label_type="bpe"):
+               label_type="bpe", cleanup_old_models=True):
 
     self.post_config = post_config
 
@@ -74,7 +74,7 @@ class TransducerSWBBaseConfig:
     self.max_seqs = 200
     self.max_seq_length = {target: 75}
     self.truncation = -1
-    self.cleanup_old_models = True
+    self.cleanup_old_models = cleanup_old_models
     self.gradient_clip = 0
     self.adam = True
     self.optimizer_epsilon = 1e-8
