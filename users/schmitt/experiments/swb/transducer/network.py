@@ -250,70 +250,17 @@ def get_alignment_net_dict(pretrain_idx):
 
 import numpy as np
 def get_extended_net_dict(
-  pretrain_idx, learning_rate, num_epochs, enc_val_total_dim, enc_val_dec_factor,
+  pretrain_idx, learning_rate, num_epochs, enc_val_dec_factor,
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
-  l2, beam_size, share_emb, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
-  label_smoothing, slow_rnn_extra_loss, boost_emit_loss, emit_loss_scale, efficient_loss, emit_extra_loss):
+  l2, beam_size, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
+  label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf"):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
   :rtype: dict[str,dict[str]|int]|None
   """
-  # Note: epoch0 is 0-based here! I.e. in contrast to elsewhere, where it is 1-based.
-  # Also, we never use #repetition here, such that this is correct.
-  # This is important because of sub-epochs and storing the HDF files,
-  # to know exactly which HDF files cover the dataset completely.
-  # epoch0 = pretrain_idx
-  net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2}}
-
-  # if pretrain_idx is not None:
-  #   net_dict["#config"] = {}
-  #
-  #   # Do this in the very beginning.
-  #   # lr_warmup = [0.0] * eval("epoch_split")  # first collect alignments with existing model, no training
-  #   lr_warmup = list(np.linspace(learning_rate * 0.1, learning_rate, num=10))
-  #   # lr_warmup += [learning_rate] * 20
-  #   if pretrain_idx < len(lr_warmup):
-  #     net_dict["#config"]["learning_rate"] = lr_warmup[
-  #       pretrain_idx]  # if pretrain_idx >= eval("epoch_split") + eval("epoch_split") // 2:  #    net_dict["#config"][
-  #     # "param_variational_noise"]
-  #     # = 0.1  # pretrain_idx -= len(lr_warmup)
-
-  # use_targetb_search_as_target = False  # not have_existing_align or epoch0 < StoreAlignmentUpToEpoch
-  # keep_linear_align = False  # epoch0 is not None and epoch0 < eval("epoch_split") * 2
-
-  # We import the model, thus no growing.
-  # start_num_lstm_layers = 2
-  # final_num_lstm_layers = 6
-  # num_lstm_layers = final_num_lstm_layers
-  # if pretrain_idx is not None:
-  #   pretrain_idx = max(pretrain_idx, 0) // 6  # Repeat a bit.
-  #   num_lstm_layers = pretrain_idx + start_num_lstm_layers
-  #   pretrain_idx = num_lstm_layers - final_num_lstm_layers
-  #   num_lstm_layers = min(num_lstm_layers, final_num_lstm_layers)
-  #
-  # if final_num_lstm_layers > start_num_lstm_layers:
-  #   start_dim_factor = 0.5
-  #   grow_frac = 1.0 - float(final_num_lstm_layers - num_lstm_layers) / (final_num_lstm_layers - start_num_lstm_layers)
-  #   dim_frac = start_dim_factor + (1.0 - start_dim_factor) * grow_frac
-  # else:
-  #   dim_frac = 1.
-  #
-  # time_reduction = [3, 2] if num_lstm_layers >= 3 else [6]
-
-  # if pretrain_idx is not None and pretrain_idx <= 1 and "learning_rate" not in net_dict["#config"]:
-  #   # Fixed learning rate for the beginning.
-  #   net_dict["#config"]["learning_rate"] = learning_rate
-
-  # net_dict["#info"] = {
-  #   "epoch0": epoch0,  # Set this here such that a new construction for every pretrain idx is enforced in all cases.
-  #   "num_lstm_layers": num_lstm_layers, "dim_frac": dim_frac}
-
-  # We use this pretrain construction during the whole training time (epoch0 > num_epochs).
-  # if pretrain_idx is not None and epoch0 % eval("epoch_split") == 0 and epoch0 > num_epochs:
-  #   # Stop pretraining now.
-  #   return None
-
+  assert ctx_size == "inf" or type(ctx_size) == int
+  net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_reduction}}
   net_dict.update({
     "source": {
       "class": "eval",
@@ -337,7 +284,7 @@ def get_extended_net_dict(
 
     # "encoder": {"class": "postfix_in_time", "postfix": 0.0, "from": "encoder0"},
     "encoder": {
-      "class": "linear", "from": "encoder0", "n_out": enc_val_total_dim // enc_val_dec_factor, "activation": None} if enc_val_dec_factor != 2 else {
+      "class": "linear", "from": "encoder0", "n_out": lstm_dim * 2 // enc_val_dec_factor, "activation": None} if enc_val_dec_factor != 1 else {
       "class": "copy", "from": "encoder0"
     },
 
@@ -387,7 +334,7 @@ def get_extended_net_dict(
   # Add encoder BLSTM stack.
   src = "conv_merged"
   num_lstm_layers = 6
-  time_reduction = [3, 2]
+  # time_reduction = [3, 2]
   if num_lstm_layers >= 1:
     net_dict.update({
       "lstm0_fw": {
@@ -417,99 +364,119 @@ def get_extended_net_dict(
         "am": {"class": "copy", "from": "data:source"}, # could make more efficient...
         "prev_out_non_blank": { # this is the previous output
           "class": "reinterpret_data", "from": "prev:output_",
-          "set_sparse_dim": target_num_labels if not share_emb else targetb_num_labels,
+          "set_sparse_dim": target_num_labels,
           "set_sparse": True},
-        "non_blank_embed": {
+
+        # embedding of the previous non-blank output
+        "prev_non_blank_embed0": {
           "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
-        # SlowRNN: only do computations on the steps where a non-blank label was output
-        # Recurrent unit which takes embedding of last label and last attention vector
+        "prev_non_blank_embed_masked": {
+          "class": "masked_computation", "mask": "prev:output_emit",
+          "from": "prev_non_blank_embed0",
+          "unit": {"class": "copy", "from": "data"}},
+        "prev_non_blank_embed": {"class": "unmask", "from": "prev_non_blank_embed_masked", "mask": "prev:output_emit"},
+
+
+        # embedding of previous output (blank or non-blank)
+        "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128},
+
+        # 1, if prev frame was segment boundary; 0, otherwise
+        # basically represents Kronecker delta
+        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
+        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
+        "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
+        "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
+        "2d_emb0": {"class": "copy", "from": ["const1.0", "const0.0"]},
+        "2d_emb1": {"class": "copy", "from": ["const0.0", "const1.0"]},
+        "prev_out_is_non_blank": {
+          "class": "switch", "condition": "prev:output_emit", "true_from": "2d_emb1", "false_from": "2d_emb0"},
+
+        # Slow Network (per segment)
         "lm_masked": {
           "class": "masked_computation", "mask": "prev:output_emit",
-          "from": "prev_out_non_blank" if not share_emb else "non_blank_embed",
+          "from": "prev_non_blank_embed",
           "unit": {
             "class": "subnetwork", "from": "data", "subnetwork": {
-              "input_embed": {
-                  "class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 621,
-                  "is_output_layer": True
-                } if not share_emb else {"class": "copy", "from": "data"},
-              "lstm0": {"class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
-                        "from": [*slow_rnn_inputs] if slow_rnn_inputs else ["input_embed"]},
-              "output": {"class": "copy", "from": "lstm0"}}}},
+              # "input_embed": {"class": "copy", "from": "data"},
+              "input_embed0": {
+                "class": "window", "from": "data", "window_size": 1, "window_left": 0,
+                "window_right": 0} if ctx_size == "inf" else {
+                "class": "window", "from": "data", "window_size": ctx_size, "window_right": 0,
+                "window_left": ctx_size - 1
+              },
+              "input_embed": {"class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
+              "slow_net": {
+                "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
+                "from": slow_rnn_inputs} if ctx_size == "inf" else {
+                "class": "linear", "activation": "tanh", "n_out": lstm_dim,
+                "from": "input_embed"},
+              "output": {"class": "copy", "from": "slow_net"}}}},
         "lm_embed_masked": {"class": "copy", "from": "lm_masked"},
         "lm_embed_unmask": {"class": "unmask", "from": "lm_embed_masked", "mask": "prev:output_emit"},
         "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
 
-        "prev_non_blank_embed_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit",
-          "from": "non_blank_embed" if share_emb else "prev_out_non_blank",
-            "unit":
-              {"class": "copy", "from": "data"} if share_emb
-                else {"class": "linear", "activation": None, "with_bias": False, "from": "data", "n_out": 128}
-        },
-        "prev_non_blank_embed": {"class": "unmask", "from": "prev_non_blank_embed_masked", "mask": "prev:output_emit"},
-
-        "prev_out_embed": {
-          "class": "linear", "from": "prev:output_", "activation": None, "n_out": 128} if not share_emb else {
-          "class": "copy", "from": "non_blank_embed"},
-        # FastRNN: recurrent network which takes current encoder frame, embedding of previous output and output
-        # from SlowRNN
+        # Fast Network (per time-frame)
         "s": {
-          "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs if fast_rnn_inputs else ["am", "prev_out_embed", "lm"],
-          "n_out": 128, "L2": l2,
-          "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}},
+          "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs, "n_out": 128, "L2": l2, "dropout": 0.3,
+          "unit_opts": {"rec_weight_dropout": 0.3}} if ctx_size == "full" else {
+          "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2,
+          "from": ["prev_non_blank_embed", "prev_out_is_non_blank", "am"]
+        },
 
-        # joint network: combine FastRNN output and SlowRNN output
-        "readout_in": {"class": "linear",
-                       "from": [*readout_inputs] if readout_inputs else ["s", "lm"],
-                       "activation": None, "n_out": 1000},
+        # Readout: linear layer which is used as input for the label model
+        "readout_in": {"class": "linear", "from": readout_inputs, "activation": None, "n_out": 1000},
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
 
-        # log-prob for non-blank labels
+        # Label model
         "label_log_prob": {
           "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
           "n_out": target_num_labels},
 
-        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
-        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
-        "label_log_prob_c_masked": {"class": "masked_computation", "mask": "is_label", "from": "label_log_prob",
-          "unit": {"class": "subnetwork", "from": "data", "subnetwork": {
-            "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
-            "output": {"class": "copy", "from": "label_log_prob_c"}}}},
-        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
-
-        # emit log-prob
-        "emit_prob0": {"class": "linear",
-                       "from": [*emit_prob_inputs] if emit_prob_inputs else "s",
-        "activation": None, "n_out": 1, "is_output_layer": True},
+        # Length model
+        "emit_prob0": {
+          "class": "linear", "from": emit_prob_inputs, "activation": None, "n_out": 1, "is_output_layer": True},
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
-        # blank log-prob
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
 
+        # LOSS OPTION 1 (slow):
+        # use CE on the full output label vector
+        "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
+        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
+        "output_prob": {
+          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
+          "loss": "ce" if task == "train" and not efficient_loss else None,
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 1.0}},
+
+        # LOSS OPTION 2 (faster):
+        # gather single log prob of the current (to be predicted) label and combine with emit log prob and then use
+        # loss as-is
+        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
+        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
+        # gather log-prob of current (non-blank) label from vector of all log-probs
+        "label_log_prob_c_masked": {
+          "class": "masked_computation", "mask": "is_label", "from": "label_log_prob", "unit": {
+            "class": "subnetwork", "from": "data", "subnetwork": {
+              "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
+              "output": {"class": "copy", "from": "label_log_prob_c"}}}},
+        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
+        # scale, which is applied to the non-blank loss
         "const_emit_loss_scale": {"class": "constant", "value": emit_loss_scale},
+        # combine label log-prob with emit log-prob
         "neg_log_prob_emit": {"class": "eval", "from": ["label_log_prob_c", "emit_log_prob", "const_emit_loss_scale"],
           "eval": "(-source(0) - source(1)) * source(2)"},
         "neg_log_prob_blank": {"class": "eval", "from": ["blank_log_prob"], "eval": "-source(0)"},
         "neg_log_prob_c": {"class": "switch", "condition": "is_label", "true_from": "neg_log_prob_emit",
           "false_from": "neg_log_prob_blank", "loss": "as_is" if task == "train" and efficient_loss else None},
 
-        # combine label log-probs and emit log-prob to get final non-blank log-prob
-        "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
-        # concat non-blank log-probs and blank log-prob
-        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
-        # obtain probabilities by applying exp
-        "output_prob": {
-          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
-          "loss": "ce" if task == "train" and not efficient_loss else None,
-          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 1.0}},
-
+        # beam search during search/ ground truth during training
         'output': {
           'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
           "input_type": "log_prob", "initial_output": 0, "cheating": "exclusive" if task == "train" else None,
-          # "explicit_search_sources": ["prev:u"] if task == "train" else None,
-          # "custom_score_combine": targetb_recomb_train if task == "train" else None
           "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" else None,
           "custom_score_combine": CodeWrapper("targetb_recomb_recog") if task == "search" else None
         },
+
+        # switchout
         "output_": {
           "class": "eval", "from": "output",
           "eval": "self.network.get_config().typed_value('switchout_target')(source, network=self.network)",
@@ -529,15 +496,6 @@ def get_extended_net_dict(
         "output_emit": {
           "class": "copy", "from": "output_is_not_blank", "initial_output": True, "is_output_layer": True},
 
-        "const0": {"class": "constant", "value": 0, "collocate_with": "du"},
-        "const1": {"class": "constant", "value": 1, "collocate_with": "du"},
-
-        # pos in target, [B]
-        "du": {"class": "switch", "condition": "output_emit", "true_from": "const1", "false_from": "const0"},
-        "u": {"class": "combine", "from": ["prev:u", "du"], "kind": "add", "initial_output": 0},
-
-        # "end": {"class": "compare", "from": ["t", "base:enc_seq_len"], "kind": "greater_equal"},
-
       }, "target": targetb, "size_target": targetb if task == "train" else None,
       "max_seq_len": "max_len_from('base:encoder') * 2"}
 
@@ -553,27 +511,6 @@ def get_extended_net_dict(
       net_dict["output"]["unit"]["output"]["scheduled_sampling"] = {
         "gold_mixin_prob": max(scheduled_sampling, 0.9**pretrain_idx)
       }
-
-  if slow_rnn_extra_loss:
-    # add an extra output layer + loss behind the SlowRNN to predict the next non-blank label
-    net_dict.update({
-      "slow_rnn": {
-        "class": "masked_computation", "mask": "output/output_emit",
-        "from": "output/lm", "unit": {"class": "copy", "from": ["output/s", "data", "output/att", ]}},
-      "slow_readout_in": {
-        "class": "linear", "from": ["slow_rnn"],
-        "activation": None, "n_out": 1000, "reuse_params": "output/readout_in"},
-      "slow_readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["slow_readout_in"]},
-      "slow_log_prob": {
-        "class": "linear", "from": "slow_readout", "activation": "log_softmax", "dropout": 0.1,
-        "n_out": target_num_labels},
-      "slow_prob": {
-        "class": "activation", "from": "slow_log_prob", "activation": "exp",
-        "target": "targetb_masked" if task == "train" else None,
-        "loss": "ce" if task == "train" else None,
-        "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 4.0}
-      },
-    })
 
   if emit_extra_loss:
     net_dict.update({
@@ -596,7 +533,8 @@ def custom_construction_algo(idx, net_dict):
   net_dict["#config"] = {}
   if idx is not None:
     # learning rate warm up
-    lr_warmup = list(np.linspace(learning_rate * 0.1, learning_rate, num=10))
+    lr_warmup = list(
+      np.linspace(net_dict["#info"]["learning_rate"] * 0.1, net_dict["#info"]["learning_rate"], num=10))
     if idx < len(lr_warmup):
       net_dict["#config"]["learning_rate"] = lr_warmup[idx]
 
@@ -622,7 +560,7 @@ def custom_construction_algo(idx, net_dict):
     "dim_frac": dim_frac, "num_lstm_layers": num_lstm_layers, "pretrain_idx": idx
   })
 
-  time_reduction = [3, 2] if num_lstm_layers >= 3 else [6]
+  time_reduction = net_dict["#info"]["time_red"] if num_lstm_layers >= 3 else [np.prod(net_dict["#info"]["time_red"])]
 
   # Add encoder BLSTM stack
   src = "conv_merged"

@@ -82,6 +82,69 @@ def get_dataset_dict(data):
 
   return d
 
+def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_extract_file, vocab, epoch_split=6):
+  import os
+  assert data in {"train", "devtrain", "cv", "dev", "hub5e_01", "rt03s"}
+  epoch_split = {
+    "train": epoch_split}.get(data, 1)
+  corpus_name = {
+    "cv": "train", "devtrain": "train"}.get(data, data)  # train, dev, hub5e_01, rt03s
+
+  hdf_files = None
+  if alignment is not None:
+    assert data in {"train", "cv", "devtrain"}
+    hdf_files = [alignment]
+
+  if data in {"train", "cv", "devtrain"}:
+    segment_file = "/u/schmitt/experiments/transducer/config/dependencies/seg_%s" % {
+      "train": "train", "cv": "cv_head3000", "devtrain": "train_head3000"}[data]
+
+  estimated_num_seqs = {
+    "train": 227047, "cv": 3000, "devtrain": 3000}  # wc -l segment-file
+
+  def add_cf(file_path):
+    return "'`cf " + file_path + "`'"
+
+  args = ["--config=/u/schmitt/experiments/transducer/config/rasr-configs/extern_sprint_dataset.config",
+          "--*.corpus.file=" + corpus_file,
+          "--*.corpus.segments.file=" + segment_file if segment_file else "",
+          "--*.feature-extraction-file=" + feature_extract_file, "--*.log-channel.file=sprint-log",
+          "--*.window-size=1"]
+
+  if not hdf_files:
+    args += ["--*.corpus.segment-order-shuffle=true", "--*.segment-order-sort-by-time-length=true",
+             "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data, -1)]
+
+  d = {
+    "class": "ExternSprintDataset",
+    "sprintTrainerExecPath": "/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding",
+    "sprintConfigStr": args, "suppress_load_seqs_print": True,  # less verbose
+    "input_stddev": 3.,
+    "orth_vocab": vocab}
+
+  partition_epochs_opts = {
+    "partition_epoch": epoch_split,
+    "estimated_num_seqs": (estimated_num_seqs[data] // epoch_split) if data in estimated_num_seqs else None, }
+
+  if hdf_files:
+    align_opts = {
+      "class": "HDFDataset", "files": hdf_files, "use_cache_manager": True,
+      "seq_list_filter_file": segment_file}  # otherwise not right selection
+    align_opts.update(partition_epochs_opts)  # this dataset will control the seq list
+    if data == "train":
+      align_opts["seq_ordering"] = "laplace:%i" % (estimated_num_seqs[data] // 1000)
+      align_opts["seq_order_seq_lens_file"] = "/u/zeyer/setups/switchboard/dataset/data/seq-lens.train.txt.gz"
+    d = {
+      "class": "MetaDataset", "datasets": {"sprint": d, "align": align_opts}, "data_map": {
+        "data": ("sprint", "data"), # target: ("sprint", target),
+        "alignment": ("align", "data"), # "align_score": ("align", "scores")
+      }, "seq_order_control_dataset": "align",  # it must support get_all_tags
+    }
+  else:
+    d.update(partition_epochs_opts)
+
+  return d
+
 def get_phoneme_dataset():
   dataset_dict = {
     'class': 'ExternSprintDataset',

@@ -9,7 +9,9 @@ from i6_experiments.users.schmitt.vocab import *
 from i6_experiments.users.schmitt.switchout import *
 from i6_experiments.users.schmitt.targetb import *
 
-from recipe.i6_core.returnn.config import ReturnnConfig
+from recipe.i6_core.returnn.config import ReturnnConfig, CodeWrapper
+
+import numpy as np
 
 class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
@@ -31,30 +33,26 @@ class TransducerSWBBaseConfig:
     self.targetb_num_labels = target_num_labels + 1
     self._cf_cache = {}
     self._alignment = None
-
-    # network
-    # self._attention_type = _attention_type
-    # self.EncKeyTotalDim = 200
-    # self.AttNumHeads = 1  # must be 1 for hard-att
-    # self.AttentionDropout = 0.1
-    # self.l2 = 0.0001
-    # self.EncKeyPerHeadDim = self.EncKeyTotalDim // self.AttNumHeads
-    # self.EncValueTotalDim = 2048
-    # self.EncValuePerHeadDim = self.EncValueTotalDim // self.AttNumHeads
-    # self.lstm_dim = self.EncValueTotalDim // 2
+    self.label_type = label_type
+    self.search_data_key = search_data_key
 
     self.extern_data = {
-      "data": {"dim": data_dim},  # Gammatone 40-dim
-      "alignment": {"dim": self.targetb_num_labels, "sparse": True}}
+      "data": {
+        "dim": data_dim,
+        "same_dim_tags_as": {"t": CodeWrapper("DimensionTag(kind=DimensionTag.Types.Spatial, description='time')")}},
+      "alignment": {
+        "dim": self.targetb_num_labels, "sparse": True,
+        "same_dim_tags_as": {
+          "t": CodeWrapper("DimensionTag(kind=DimensionTag.Types.Spatial, description='output-len')")}}}
     if task == "search":
       self.extern_data["targetb"] = {"dim": self.targetb_num_labels, "sparse": True,
                                               "available_for_inference": False}
 
-    time_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='time')"
-    output_len_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='output-len')"  # downsampled time
-    self.extern_data_epilog = [
-      "extern_data['data']['same_dim_tags_as'] = {'t': %s}" % time_tag_str,
-      "extern_data['alignment']['same_dim_tags_as'] = {'t': %s}" % output_len_tag_str if alignment_same_len else "None"]
+    # time_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='time')"
+    # output_len_tag_str = "DimensionTag(kind=DimensionTag.Types.Spatial, description='output-len')"  # downsampled time
+    # self.extern_data_epilog = [
+    #   "extern_data['data']['same_dim_tags_as'] = {'t': %s}" % time_tag_str,
+    #   "extern_data['alignment']['same_dim_tags_as'] = {'t': %s}" % output_len_tag_str if alignment_same_len else "None"]
 
     # other options
     self.network = {}
@@ -94,37 +92,19 @@ class TransducerSWBBaseConfig:
     # prolog
     self.import_prolog = ["from returnn.tf.util.data import DimensionTag", "import os", "import numpy as np",
                           "from subprocess import check_output, CalledProcessError"]
-    self.function_prolog = [
-      summary,
-      _mask,
-      random_mask,
-      transform,
-      get_vocab_tf,
-      get_vocab_sym,
-      out_str,
-      # targetb_recomb_train,
-      targetb_recomb_recog,
-      get_filtered_score_op,
-      get_filtered_score_cpp,
-      cf,
-      get_dataset_dict,
-    ]
-
-    # epilog
 
     if task == "train":
-      if label_type == "bpe":
-        self.dataset_epilog = [
-          "train = get_dataset_dict('train')",
-          "dev = get_dataset_dict('cv')",
-          "eval_datasets = {'devtrain': get_dataset_dict('devtrain')}"
-        ]
-      elif label_type == "phonemes":
-        self.train = get_phoneme_dataset()
-        self.dev = get_phoneme_dataset()
+      self.function_prolog = [_mask, random_mask, transform]
     else:
-      assert search_data_key is not None
-      self.dataset_epilog = ["search_data = get_dataset_dict('%s')" % search_data_key]
+      assert task == "search" and label_type != "phonemes"
+      self.function_prolog = [
+        get_vocab_tf,
+        get_vocab_sym,
+        out_str,
+        targetb_recomb_recog,
+        get_filtered_score_op,
+        get_filtered_score_cpp,
+      ]
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
@@ -193,53 +173,65 @@ class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
 
 class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
   def __init__(
-    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, enc_val_dim, att_key_dim,
+    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim, att_key_dim,
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
-    att_seg_emb_query, att_num_heads, pretrain=True, slow_rnn_extra_loss=False, readout_inputs=None,
-    fast_rnn_inputs=None, slow_rnn_inputs=None, emit_prob_inputs=None, label_smoothing, boost_emit_loss,
-    share_emb, scheduled_sampling, use_attention, use_phonemes, mask_att,
-    emit_extra_loss, efficient_loss, **kwargs):
+    att_seg_emb_query, att_num_heads, readout_inputs,
+    fast_rnn_inputs, slow_rnn_inputs, emit_prob_inputs, label_smoothing,
+    scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full", pretrain=True,
+    train_data_opts=None, dev_data_opts=None, devtrain_data_opts=None, search_data_opts=None, **kwargs):
 
     super().__init__(*args, **kwargs)
 
-    self._alignment = "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/merboldt_swb_transducer/rna-tf2.blank0.enc6l-grow2l.scratch-lm.rdrop02.lm1-1024.attwb5-drop02.l2_1e_4.mlr50.epoch-150.swap"
+    # self._alignment = "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/merboldt_swb_transducer/rna-tf2.blank0.enc6l-grow2l.scratch-lm.rdrop02.lm1-1024.attwb5-drop02.l2_1e_4.mlr50.epoch-150.swap"
 
     self.batch_size = 10000 if self.task == "train" else 4000
     chunk_size = 60
-    time_red = 6
+    # if self.label_type == "bpe":
+    #   time_red = [3, 2]
+    # else:
+    #   assert self.label_type == "phonemes"
+    #   time_red = [1]
     self.chunking = ({
-      "data": chunk_size * time_red, "alignment": chunk_size}, {
-      "data": chunk_size * time_red // 2, "alignment": chunk_size // 2})
+      "data": chunk_size * int(np.prod(time_red)), "alignment": chunk_size}, {
+      "data": chunk_size * int(np.prod(time_red)) // 2, "alignment": chunk_size // 2})
     self.accum_grad_multiple_step = 2
 
-    self.function_prolog += [
-      # add_attention,
-      switchout_target,
-      custom_construction_algo
-    ]
+    if self.task == "train":
+      self.function_prolog += [
+        # add_attention,
+        switchout_target,
+        custom_construction_algo
+      ]
     # TODO check, whether all current combinations of hyperparameters are working for training and search
-    self.network = get_extended_net_dict(
-      pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150, enc_val_total_dim=enc_val_dim,
+    self.network = get_extended_net_dict(pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150,
       enc_val_dec_factor=1, target_num_labels=self.target_num_labels, target=self.target, task=self.task,
-      targetb_num_labels=self.targetb_num_labels, scheduled_sampling=False, lstm_dim=1024, l2=0.0001,
-      beam_size=self.beam_size, share_emb=False, slow_rnn_inputs=["input_embed", "base:am"],
-      fast_rnn_inputs=["prev_out_embed", "lm", "am"],
-      targetb_blank_idx=1030, readout_inputs=["s", "lm", "am"], emit_prob_inputs=["s"], label_smoothing=None,
-      slow_rnn_extra_loss=False, boost_emit_loss=False, emit_extra_loss=emit_extra_loss,
-      emit_loss_scale=1.0, efficient_loss=efficient_loss
-    )
+      targetb_num_labels=self.targetb_num_labels, scheduled_sampling=scheduled_sampling, lstm_dim=lstm_dim, l2=0.0001,
+      beam_size=self.beam_size, slow_rnn_inputs=slow_rnn_inputs, fast_rnn_inputs=fast_rnn_inputs,
+      targetb_blank_idx=self.targetb_blank_idx, readout_inputs=readout_inputs, emit_prob_inputs=emit_prob_inputs,
+      label_smoothing=label_smoothing, emit_extra_loss=emit_extra_loss, emit_loss_scale=1.0,
+      efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size)
     if use_attention:
-      self.network = add_attention(
-        self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb, att_win_size=att_win_size,
-        task=self.task, EncValueTotalDim=enc_val_dim, EncValueDecFactor=1, EncKeyTotalDim=att_key_dim,
-        att_weight_feedback=att_weight_feedback, att_type=att_type, att_seg_clamp_size=att_seg_clamp_size,
-        att_seg_left_size=att_seg_left_size, att_seg_right_size=att_seg_right_size, att_area=att_area,
-        att_query_in=att_query_in, att_seg_emb_query=att_seg_emb_query, AttNumHeads=att_num_heads,
-        EncValuePerHeadDim=int(enc_val_dim // att_num_heads), l2=0.0001, AttentionDropout=0.1,
+      self.network = add_attention(self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb,
+        att_win_size=att_win_size, task=self.task, EncValueTotalDim=lstm_dim * 2, EncValueDecFactor=1,
+        EncKeyTotalDim=att_key_dim, att_weight_feedback=att_weight_feedback, att_type=att_type,
+        att_seg_clamp_size=att_seg_clamp_size, att_seg_left_size=att_seg_left_size,
+        att_seg_right_size=att_seg_right_size, att_area=att_area, att_query_in=att_query_in,
+        att_seg_emb_query=att_seg_emb_query, AttNumHeads=att_num_heads,
+        EncValuePerHeadDim=int(lstm_dim * 2 // att_num_heads), l2=0.0001, AttentionDropout=0.1,
         EncKeyPerHeadDim=int(att_key_dim // att_num_heads))
 
+    if self.task == "train":
+      assert train_data_opts and dev_data_opts and devtrain_data_opts
+      self.train = get_dataset_dict_new(vocab=self.vocab, epoch_split=self.epoch_split, **train_data_opts)
+      self.dev = get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **dev_data_opts)
+      self.eval_datasets = {'devtrain': get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **devtrain_data_opts)}
+    else:
+      assert self.search_data_key and self.label_type != "phonemes" and search_data_opts
+      self.search_data = get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **search_data_opts)
+
     if pretrain:
-      self.pretrain_epilog = ["pretrain = {'copy_param_mode': 'subset', 'construction_algo': custom_construction_algo}"]
+      self.pretrain = {'copy_param_mode': 'subset', 'construction_algo': CodeWrapper("custom_construction_algo")}
+      # self.pretrain_epilog = ["pretrain = {'copy_param_mode': 'subset', 'construction_algo': custom_construction_algo}"]
 
     if self.task == "search":
       self.extern_data[self.target] = {"dim": self.target_num_labels, "sparse": True}

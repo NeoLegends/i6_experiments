@@ -56,10 +56,6 @@ def add_attention(
     # the last non-blank frame is excluded; the current frame is included
     net_dict["output"]["unit"].update({
       "const1": {"class": "constant", "value": 1},
-      "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
-      "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
-      "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
-      "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
       "segment_starts": {  # (B,)
         "class": "switch", "condition": "prev:output_is_not_blank", "true_from": ":i",
         "false_from": "prev:segment_starts", "initial_output": 0},
