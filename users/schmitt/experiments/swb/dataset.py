@@ -82,8 +82,9 @@ def get_dataset_dict(data):
 
   return d
 
-def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_extract_file, vocab, epoch_split=6):
-  import os
+def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_cache, vocab, epoch_split=6):
+  from subprocess import check_output, CalledProcessError
+
   assert data in {"train", "devtrain", "cv", "dev", "hub5e_01", "rt03s"}
   epoch_split = {
     "train": epoch_split}.get(data, 1)
@@ -107,8 +108,8 @@ def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_ext
 
   args = ["--config=/u/schmitt/experiments/transducer/config/rasr-configs/extern_sprint_dataset.config",
           "--*.corpus.file=" + corpus_file,
-          "--*.corpus.segments.file=" + segment_file if segment_file else "",
-          "--*.feature-extraction-file=" + feature_extract_file, "--*.log-channel.file=sprint-log",
+          "--*.corpus.segments.file=" + segment_file if segment_file else "", "--*.log-channel.file=sprint-log",
+          "--*.feature-cache-path=" + add_cf(feature_cache) if check_output(["hostname"]).strip().decode("utf8") != "cluster-cn-211" else "--*.feature-cache-path=" + feature_cache,
           "--*.window-size=1"]
 
   if not hdf_files:
