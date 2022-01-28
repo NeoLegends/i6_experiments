@@ -177,7 +177,8 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
     att_seg_emb_query, att_num_heads, readout_inputs,
     fast_rnn_inputs, slow_rnn_inputs, emit_prob_inputs, label_smoothing,
-    scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full", pretrain=True,
+    scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
+    fast_rec=False, pretrain=True,
     train_data_opts=None, dev_data_opts=None, devtrain_data_opts=None, search_data_opts=None, **kwargs):
 
     super().__init__(*args, **kwargs)
@@ -209,7 +210,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       beam_size=self.beam_size, slow_rnn_inputs=slow_rnn_inputs, fast_rnn_inputs=fast_rnn_inputs,
       targetb_blank_idx=self.targetb_blank_idx, readout_inputs=readout_inputs, emit_prob_inputs=emit_prob_inputs,
       label_smoothing=label_smoothing, emit_extra_loss=emit_extra_loss, emit_loss_scale=1.0,
-      efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size)
+      efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size, fast_rec=fast_rec)
     if use_attention:
       self.network = add_attention(self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb,
         att_win_size=att_win_size, task=self.task, EncValueTotalDim=lstm_dim * 2, EncValueDecFactor=1,

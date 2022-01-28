@@ -253,7 +253,8 @@ def get_extended_net_dict(
   pretrain_idx, learning_rate, num_epochs, enc_val_dec_factor,
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
-  label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf"):
+  label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
+  fast_rec=False):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
@@ -357,14 +358,66 @@ def get_extended_net_dict(
     src = ["lstm%i_fw" % i, "lstm%i_bw" % i]
   net_dict["encoder0"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
 
+  def get_fast_network_dict(ctx_size, rec):
+    if ctx_size == "full":
+      return {
+        "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs, "n_out": 128, "L2": l2, "dropout": 0.3,
+        "unit_opts": {"rec_weight_dropout": 0.3}}
+    elif not rec:
+      return {
+        "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": fast_rnn_inputs}
+    else:
+      """
+      Use an LSTM which is reset, if the last frame was a segment boundary, i.e. it only uses recurrency WITHIN
+      the segments
+      """
+      assert type(ctx_size) == int and rec
+      return {
+        "class": "subnetwork", "from": fast_rnn_inputs, "subnetwork": {
+          # the input is dependent on the previous hidden state (output), if the last frame was not a segment boundary
+          # otherwise, the previous hidden state is set to 0, i.e. has no impact on the following calculations
+          "prev_out_rec": {"class": "copy", "from": "prev:output"},
+          "prev_out_reset": {"class": "eval", "from": "prev:output", "eval": "source(0) * 0"},
+          "input_reset": {"class": "copy", "from": ["prev_out_reset", "data:source"]},
+          "input_rec": {"class": "copy", "from": ["prev_out_rec", "data:source"]},
+          "input": {
+            "class": "switch", "condition": "base:prev:output_emit", "true_from": "input_reset",
+            "false_from": "input_rec"},
+
+          # the different gates of the LSTM all perform calculations on 'input'
+          "input_gate": {"class": "linear", "from": "input", "activation": "sigmoid", "n_out": 128},
+          "forget_gate": {"class": "linear", "from": "input", "activation": "sigmoid", "n_out": 128},
+          "output_gate": {"class": "linear", "from": "input", "activation": "sigmoid", "n_out": 128},
+          "cell_in": {"class": "linear", "from": "input", "activation": "tanh", "n_out": 128},
+
+          # the cell state is dependent on the previous cell state and the input,
+          # if the last frame was not a segment boundary. otherwise, it is only dependent on the input
+          "c_rec": {
+            "class": "eval", "from": ["input_gate", "cell_in", "forget_gate", "prev:c"],
+            "eval": "source(0) * source(1) + source(2) * source(3)"},
+          "c_reset": {
+            "class": "eval", "from": ["input_gate", "cell_in"],
+            "eval": "source(0) * source(1)"},
+          "c": {
+            "class": "switch", "condition": "base:prev:output_emit", "true_from": "c_reset",
+            "false_from": "c_rec"},
+
+          # the output is dependent on the input and the cell state, both of which are only recurrent if the
+          # last frame was a segment boundary
+          "output": {
+            "class": "eval", "from": ["output_gate", "c"], "eval": "source(0) * source(1)"},
+        }
+      }
+
   def get_output_dict(train, targetb):
     """This is the decoder without attention. The attention is added via attention.py"""
     return {
       "class": "rec", "from": "encoder", "include_eos": True, "back_prop": (task == "train") and train, "unit": {
         "am": {"class": "copy", "from": "data:source"}, # could make more efficient...
-        "prev_out_non_blank": { # this is the previous output
+
+        "prev_out_non_blank": {
           "class": "reinterpret_data", "from": "prev:output_",
-          "set_sparse_dim": target_num_labels,
+          "set_sparse_dim": targetb_num_labels,
           "set_sparse": True},
 
         # embedding of the previous non-blank output
@@ -402,26 +455,20 @@ def get_extended_net_dict(
                 "class": "window", "from": "data", "window_size": 1, "window_left": 0,
                 "window_right": 0} if ctx_size == "inf" else {
                 "class": "window", "from": "data", "window_size": ctx_size, "window_right": 0,
-                "window_left": ctx_size - 1
-              },
+                "window_left": ctx_size - 1},
               "input_embed": {"class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
               "slow_net": {
                 "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
                 "from": slow_rnn_inputs} if ctx_size == "inf" else {
                 "class": "linear", "activation": "tanh", "n_out": lstm_dim,
-                "from": "input_embed"},
+                "from": slow_rnn_inputs},
               "output": {"class": "copy", "from": "slow_net"}}}},
         "lm_embed_masked": {"class": "copy", "from": "lm_masked"},
         "lm_embed_unmask": {"class": "unmask", "from": "lm_embed_masked", "mask": "prev:output_emit"},
         "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
 
         # Fast Network (per time-frame)
-        "s": {
-          "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs, "n_out": 128, "L2": l2, "dropout": 0.3,
-          "unit_opts": {"rec_weight_dropout": 0.3}} if ctx_size == "full" else {
-          "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2,
-          "from": ["prev_non_blank_embed", "prev_out_is_non_blank", "am"]
-        },
+        "s": get_fast_network_dict(ctx_size=ctx_size, rec=fast_rec),
 
         # Readout: linear layer which is used as input for the label model
         "readout_in": {"class": "linear", "from": readout_inputs, "activation": None, "n_out": 1000},
