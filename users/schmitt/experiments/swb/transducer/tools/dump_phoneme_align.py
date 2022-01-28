@@ -12,24 +12,16 @@ import argparse
 import numpy as np
 import tensorflow as tf
 
-# import _setup_returnn_env  # noqa
-from returnn.log import log
-import returnn.__main__ as rnn
-import returnn.datasets.hdf as hdf_dataset_mod
-from returnn.datasets import Dataset, init_dataset
-from returnn.config import Config
-from returnn.tf.util.data import Data
-
-tf.compat.v1.enable_eager_execution()
 
 def hdf_dataset_init(dataset, file_name):
   """
   :param str file_name: filename of hdf dataset file in the filesystem
   :rtype: hdf_dataset_mod.HDFDatasetWriter
   """
-  # return hdf_dataset_mod.HDFDatasetWriter(filename=file_name)
+  import returnn.datasets.hdf as hdf_dataset_mod
   return hdf_dataset_mod.SimpleHDFWriter(
     filename=file_name, dim=dataset.get_data_dim("classes") + 1, ndim=1)
+
 
 def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   """
@@ -37,11 +29,6 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   :param hdf_dataset_mod.HDFDatasetWriter hdf_dataset:
   :param parser_args: argparse object from main()
   """
-  # hdf_dataset.dump_from_dataset(
-  #   dataset=dataset,
-  #   epoch=parser_args.epoch, start_seq=parser_args.start_seq, end_seq=parser_args.end_seq,
-  #   use_progress_bar=True)
-
   seq_idx = parser_args.start_seq
   end_idx = parser_args.end_seq
   if end_idx < 0:
@@ -51,19 +38,16 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx <= end_idx:
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "classes")
-    print("ORIGINAL: ", data)
     blank_mask = [True if i == j else False for i, j in zip(data[:-1], data[1:])] + [False]
     data[blank_mask] = target_dim
-    print("MODIFIED: ", data)
     seq_len = dataset.get_seq_length(seq_idx)["classes"]
     tag = dataset.get_tag(seq_idx)
-    data_obj = Data(name="alignment", sparse=True, dim=89, size_placeholder={0: tf.constant([seq_len])}, placeholder=tf.constant(np.expand_dims(data, axis=0), dtype="int32"))
-    new_data = data_obj.copy_as_batch_spatial_major().placeholder.numpy()
+
+    new_data = tf.constant(np.expand_dims(data, axis=0), dtype="int32")
 
     extra = {}
-    sizes = tf.convert_to_tensor([size for (i, size) in sorted(data_obj.size_placeholder.items())])
-    seq_lens = {i: size.numpy() for (i, size) in zip(sorted(data_obj.size_placeholder.keys()), sizes)}
-    ndim_without_features = data_obj.ndim - (0 if data_obj.sparse or data_obj.feature_dim_axis is None else 1)
+    seq_lens = {0: tf.constant([seq_len]).numpy()}
+    ndim_without_features = 1 #- (0 if data_obj.sparse or data_obj.feature_dim_axis is None else 1)
     for dim in range(ndim_without_features):
       if dim not in seq_lens:
         seq_lens[dim] = np.array([new_data.shape[dim + 1]] * 1, dtype="int32")
@@ -71,8 +55,6 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
     for i, (axis, size) in enumerate(sorted(seq_lens.items())):
       batch_seq_sizes[:, i] = size
     extra["seq_sizes"] = batch_seq_sizes
-
-    print("New Data: ", new_data)
 
     hdf_dataset.insert_batch(new_data, seq_len=seq_lens, seq_tag=[tag], extra=extra)
     seq_idx += 1
@@ -85,52 +67,42 @@ def hdf_close(hdf_dataset):
   hdf_dataset.close()
 
 
-def init(rasr_config_path, time_red):
+def init(rasr_config_path, time_red, data_key):
   """
   :param str config_filename: global config for CRNN
   :param list[str] cmd_line_opts: options for init_config method
   :param str dataset_config_str: dataset via init_dataset_via_str()
   """
-  rnn.init_better_exchook()
-  rnn.init_thread_join_hack()
+  from returnn.log import log
+  from returnn.__main__ import init_better_exchook, init_thread_join_hack, init_faulthandler
+  init_better_exchook()
+  init_thread_join_hack()
   log.initialize(verbosity=[5])
   print("Returnn hdf_dump starting up.", file=log.v3)
-  rnn.init_faulthandler()
+  init_faulthandler()
+
+  estimated_num_seqs = {"train": 227047, "cv": 3000, "devtrain": 3000}
+  epoch_split = 1
 
   sprint_args = [
     "--config=%s" % rasr_config_path,
     "--*.LOGFILE=nn-trainer.train.log",
     "--*.TASK=1", "--*.corpus.segment-order-shuffle=true",
-    "--*.reduce-alignment-factor=%d" % time_red
+    "--*.reduce-alignment-factor=%d" % time_red, "--*.corpus.segment-order-shuffle=true",
+    "--*.segment-order-sort-by-time-length=true",
+    "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data_key, -1),
   ]
 
   dataset_dict = {
     'class': 'ExternSprintDataset',
-    # 'sprintConfigStr': '--config=%s --*.LOGFILE=nn-trainer.train.log --*.TASK=1 --*.corpus.segment-order-shuffle=true' % rasr_config_path,
+    "reduce_target_factor": time_red,
     'sprintConfigStr': sprint_args,
-    'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding'}
-  dataset = init_dataset(dataset_dict)
+    'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding',
+    "partition_epoch": epoch_split,
+    "estimated_num_seqs": (estimated_num_seqs[data_key] // epoch_split) if data_key in estimated_num_seqs else None, }
+  dataset = rnn.datasets.init_dataset(dataset_dict)
   print("Source dataset:", dataset.len_info(), file=log.v3)
   return dataset
-
-
-def _is_crnn_config(filename):
-  """
-  :param str filename:
-  :rtype: bool
-  """
-  if filename.endswith(".gz"):
-    return False
-  if filename.endswith(".config"):
-    return True
-  # noinspection PyBroadException
-  try:
-    config = Config()
-    config.load_file(filename)
-    return True
-  except Exception:
-    pass
-  return False
 
 
 def main(argv):
@@ -145,17 +117,24 @@ def main(argv):
   parser.add_argument('--end_seq', type=int, default=float("inf"), help="End sequence index of the dataset to dump")
   parser.add_argument('--epoch', type=int, default=1, help="Optional start epoch for initialization")
   parser.add_argument('--time_red', type=int, default=1, help="Time-downsampling factor")
+  parser.add_argument('--returnn_root', help="Returnn root to use for imports")
+  parser.add_argument('--data_key')
 
   args = parser.parse_args(argv[1:])
 
+  sys.path.insert(0, args.returnn_root)
+  global rnn
+  import returnn as rnn
+  import returnn.__main__ as rnn_main
+  import returnn.tf.compat as tf_compat
+  tf_compat.v1.enable_eager_execution()
 
-
-  dataset = init(rasr_config_path=args.rasr_config, time_red=args.time_red)
+  dataset = init(rasr_config_path=args.rasr_config, time_red=args.time_red, data_key=args.data_key)
   hdf_dataset = hdf_dataset_init(dataset, args.hdf_filename)
   hdf_dump_from_dataset(dataset, hdf_dataset, args)
   hdf_close(hdf_dataset)
 
-  rnn.finalize()
+  rnn_main.finalize()
 
 
 if __name__ == '__main__':
