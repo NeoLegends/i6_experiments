@@ -6,8 +6,8 @@ import os
 # dataset = None
 
 
-def calc_segment_stats(blank_idx, segment):
-  if segment == "total":
+def calc_segment_stats(blank_idx, silence_idx, segment):
+  if segment in ["total", "silence"]:
     segment_idxs = ":"
     initial_idx = "0"
   elif segment == "first":
@@ -22,6 +22,11 @@ def calc_segment_stats(blank_idx, segment):
   seq_idx = 0
   seg_total_len = 0
   num_segs = 0
+  num_blanks = 0
+  num_non_blanks = 0
+  num_silence = None
+  if silence_idx is not None:
+    num_silence = 0
   while dataset.is_less_than_num_seqs(seq_idx):
     if seq_idx % 1000 == 0:
       complete_frac = dataset.get_complete_frac(seq_idx)
@@ -29,6 +34,11 @@ def calc_segment_stats(blank_idx, segment):
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "data")
     non_blank_idxs = np.where(data != blank_idx)[0]
+    num_non_blanks += len(non_blank_idxs)
+    num_blanks += len(data) - len(non_blank_idxs)
+    silence_idxs = None
+    if silence_idx is not None:
+      silence_idxs = np.where(data == silence_idx)[0]
     if non_blank_idxs.size == 0:
       seq_idx += 1
       continue
@@ -42,6 +52,14 @@ def calc_segment_stats(blank_idx, segment):
           # the segment length is the difference from the previous border to the current one
           # for the first and last segment, the result needs to be corrected (see after while)
           seg_total_len += i - prev_i
+          # in this case, we just want to consider silence segments
+          if segment == "silence" and i not in silence_idxs:
+            num_segs -= 1
+            seg_total_len -= i - prev_i
+          # in this case, we do not want to consider silence segments
+          if segment != "silence" and silence_idx is not None and i in silence_idxs:
+            num_segs -= 1
+            seg_total_len -= i - prev_i
           prev_i = i
       except IndexError:
         continue
@@ -60,6 +78,12 @@ def calc_segment_stats(blank_idx, segment):
     mode = "a"
   with open(filename, mode) as f:
     f.write(segment + ": " + str(mean_seg_len) + "\n")
+
+  filename = "blank_ratio"
+  if not os.path.exists(filename):
+    with open(filename, "w+") as f:
+      f.write("Blanks: " + str(num_blanks) + "\n")
+      f.write("Non Blanks: " + str(num_non_blanks) + "\n")
 
 
 def init(hdf_file, seq_list_filter_file):
@@ -87,11 +111,14 @@ def main():
   arg_parser.add_argument("hdf_file", help="hdf file which contains the extracted alignments of some corpus")
   arg_parser.add_argument("--seq-list-filter-file", help="whitelist of sequences to use", default=None)
   arg_parser.add_argument("--blank-idx", help="the blank index in the alignment", default=0, type=int)
+  arg_parser.add_argument("--silence-idx", help="the blank index in the alignment", default=None, type=int)
   arg_parser.add_argument("--segment", help="over which segments to calculate the statistics: 'total', 'first', "
                                             "'except_first', 'all' (default: 'all')", default="all")
   arg_parser.add_argument("--returnn-root", help="path to returnn root")
   args = arg_parser.parse_args()
-  assert args.segment in ["first", "except_first", "all", "total"]
+  assert args.segment in ["first", "except_first", "all", "total", "silence"]
+  if args.segment == "silence":
+    assert args.silence_idx is not None
   sys.path.insert(0, args.returnn_root)
   global rnn
   import returnn.__main__ as rnn
@@ -101,9 +128,9 @@ def main():
   try:
     if args.segment == "all":
       for seg in ["total", "first", "except_first"]:
-        calc_segment_stats(args.blank_idx, seg)
+        calc_segment_stats(args.blank_idx, args.silence_idx, seg)
     else:
-      calc_segment_stats(args.blank_idx, args.segment)
+      calc_segment_stats(args.blank_idx, args.silence_idx, args.segment)
   except KeyboardInterrupt:
     print("KeyboardInterrupt")
     sys.exit(1)
