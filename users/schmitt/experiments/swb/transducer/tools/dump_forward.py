@@ -14,14 +14,13 @@ import subprocess
 import tensorflow as tf
 import pickle
 
-import _setup_returnn_env  # noqa
-import returnn.__main__ as rnn
-import returnn.tf.layers.base
-from returnn.log import log
+# import _setup_returnn_env  # noqa
+# import returnn.tf.layers.base
+# from returnn.log import log
 import argparse
 from matplotlib import pyplot as plt
 from matplotlib import ticker
-from returnn.util.basic import pretty_print
+# from returnn.util.basic import pretty_print
 
 
 def dump(dataset, options):
@@ -29,7 +28,7 @@ def dump(dataset, options):
   :type dataset: Dataset.Dataset
   :param options: argparse.Namespace
   """
-  print("Epoch: %i" % options.epoch, file=log.v3)
+  print("Epoch: %i" % options.epoch, file=returnn.log.log.v3)
   dataset.init_seq_order(options.epoch)
   print("LABELS: ", dataset.labels)
 
@@ -234,6 +233,8 @@ def dump(dataset, options):
         out["att_weights-out"],
         (weight_batch_axis, weight_time_axis, weight_att_axis, weight_head_axis))
 
+      print("WEIGHTS SHAPE: ", weights.shape)
+
       energies = np.transpose(
         out["att_energy-out"],
         (energy_batch_axis, energy_time_axis, energy_att_axis, energy_head_axis))
@@ -267,6 +268,7 @@ def dump(dataset, options):
           assert rnn.config.typed_value("att_area") == "seg"
           energy_len = out["energy_len"]
           segment_starts = out["segment_starts-out"][0]
+          print("WEIGHTS SHAPE: ", segment_starts.shape)
           energies_ = np.where(np.arange(0, energies_.shape[1])[None, :] >= energy_len, np.min(energies_), energies_)
           zeros = np.zeros((weights_.shape[0], encoder_len - weights_.shape[1]))  # (dec, enc - win)
           ones = np.ones_like(zeros)
@@ -294,13 +296,12 @@ def dump(dataset, options):
           [np.repeat(energies_[:, :-1], 6, axis=-1), np.repeat(energies_[:, -1:], last_label_rep, axis=-1)], axis=-1)
         energies_ = energies_[target_label_idxs]
 
-        vocab = rnn.config.typed_value("vocab")
-        if "vocab_file" in vocab:
-          with open(vocab["vocab_file"]) as f:
-            vocab = f.read()
-          vocab = ast.literal_eval(vocab)
-          vocab = {v: k for k, v in vocab.items()}
-          target_align_major = [vocab[c] for c in target_align_major]
+        assert os.path.exists(options.vocab_file)
+        with open(options.vocab_file) as f:
+          vocab = f.read()
+        vocab = ast.literal_eval(vocab)
+        vocab = {v: k for k, v in vocab.items()}
+        target_align_major = [vocab[c] for c in target_align_major]
 
         matrices = [
           matrix for matrix, flag in
@@ -438,7 +439,7 @@ def dump(dataset, options):
     f.write("\nNon Blank Mean Loss: " + str(non_blank_loss / blank_len))
     f.write("\nNon Blank Mean Error: " + str(non_blank_err / blank_len))
 
-  print("Done. More seqs which we did not dumped: %s" % dataset.is_less_than_num_seqs(seq_idx), file=log.v1)
+  print("Done. More seqs which we did not dumped: %s" % dataset.is_less_than_num_seqs(seq_idx), file=returnn.log.log.v1)
 
 
 def net_dict_add_losses(net_dict):
@@ -509,13 +510,21 @@ def main(argv):
   arg_parser.add_argument('--endseq', type=int, default=10, help='end seq idx (inclusive) or -1 (default: 10)')
   arg_parser.add_argument('--out_dir', type=str)
   arg_parser.add_argument('--model_name', type=str, default="model")
+  arg_parser.add_argument('--vocab_file', type=str)
   arg_parser.add_argument('--plot_seqs', action="append", type=int)
   arg_parser.add_argument('--plot_weights', action="store_true")
   arg_parser.add_argument('--plot_energies', action="store_true")
   arg_parser.add_argument('--presentation_mode', action="store_true")
   arg_parser.add_argument('--store_plot_data', action="store_true")
+  arg_parser.add_argument('--returnn_root', type=str)
 
   args = arg_parser.parse_args(argv[1:])
+
+  sys.path.insert(0, args.returnn_root)
+  global rnn
+  global returnn
+  import returnn.__main__ as rnn
+  import returnn
 
   init(config_filename=args.returnn_config, command_line_options=[])
   dump(rnn.train_data, args)
