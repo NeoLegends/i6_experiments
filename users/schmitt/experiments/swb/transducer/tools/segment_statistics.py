@@ -39,6 +39,8 @@ def calc_segment_stats(blank_idx, silence_idx, segment):
     silence_idxs = None
     if silence_idx is not None:
       silence_idxs = np.where(data == silence_idx)[0]
+      num_silence += len(silence_idxs)
+      num_non_blanks -= len(silence_idxs)
     if non_blank_idxs.size == 0:
       seq_idx += 1
       continue
@@ -83,7 +85,11 @@ def calc_segment_stats(blank_idx, silence_idx, segment):
   if not os.path.exists(filename):
     with open(filename, "w+") as f:
       f.write("Blanks: " + str(num_blanks) + "\n")
-      f.write("Non Blanks: " + str(num_non_blanks) + "\n")
+      if silence_idx is None:
+        f.write("Non Blanks: " + str(num_non_blanks) + "\n")
+      else:
+        f.write("Non Silence: " + str(num_non_blanks) + "\n")
+        f.write("Silence: " + str(num_silence) + "\n")
 
 
 def init(hdf_file, seq_list_filter_file):
