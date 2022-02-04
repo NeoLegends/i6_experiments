@@ -254,7 +254,7 @@ def get_extended_net_dict(
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
-  fast_rec=False):
+  fast_rec=False, with_silence=False):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
@@ -518,7 +518,8 @@ def get_extended_net_dict(
         # beam search during search/ ground truth during training
         'output': {
           'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
-          "input_type": "log_prob", "initial_output": 0, "cheating": "exclusive" if task == "train" else None,
+          "input_type": "log_prob", "initial_output": 0 if not with_silence else targetb_blank_idx - 1,
+          "cheating": "exclusive" if task == "train" else None,
           "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" else None,
           "custom_score_combine": CodeWrapper("targetb_recomb_recog") if task == "search" else None
         },
@@ -527,8 +528,8 @@ def get_extended_net_dict(
         "output_": {
           "class": "eval", "from": "output",
           "eval": "self.network.get_config().typed_value('switchout_target')(source, network=self.network)",
-          "initial_output": 0, } if task == "train" and not scheduled_sampling else {
-          "class": "copy", "from": "output", "initial_output": 0},
+          "initial_output": 0 if not with_silence else targetb_blank_idx - 1} if task == "train" and not scheduled_sampling else {
+          "class": "copy", "from": "output", "initial_output": 0 if not with_silence else targetb_blank_idx - 1},
 
         "out_str": {
           "class": "eval", "from": ["prev:out_str", "output_emit", "output"], "initial_output": None,

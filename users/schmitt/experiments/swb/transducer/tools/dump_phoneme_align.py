@@ -20,7 +20,7 @@ def hdf_dataset_init(dataset, file_name):
   """
   import returnn.datasets.hdf as hdf_dataset_mod
   return hdf_dataset_mod.SimpleHDFWriter(
-    filename=file_name, dim=dataset.get_data_dim("classes") + 1, ndim=1)
+    filename=file_name, dim=dataset.get_data_dim("classes") + 2, ndim=1)
 
 
 def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
@@ -35,6 +35,7 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
     end_idx = float("inf")
   dataset.init_seq_order(parser_args.epoch)
   target_dim = dataset.get_data_dim("classes")
+  blank_idx = target_dim + 1  # idx target_dim is reserved for SOS token
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx <= end_idx:
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "classes")
