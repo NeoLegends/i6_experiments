@@ -31,6 +31,8 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   """
   seq_idx = parser_args.start_seq
   end_idx = parser_args.end_seq
+  sil_use_blanks = parser_args.silence_use_blanks
+  sil_idx = parser_args.silence_idx
   if end_idx < 0:
     end_idx = float("inf")
   dataset.init_seq_order(parser_args.epoch)
@@ -39,8 +41,10 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx <= end_idx:
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "classes")
-    blank_mask = [True if i == j else False for i, j in zip(data[:-1], data[1:])] + [False]
-    data[blank_mask] = target_dim
+    # replace every frame label with blank except the last frame of each segment, which is the segment label
+    # if sil_use_blanks is False, all frames of silence segments are labeled as silence, without blank labels
+    blank_mask = [True if i == j and (sil_use_blanks or i != sil_idx) else False for i, j in zip(data[:-1], data[1:])] + [False]
+    data[blank_mask] = blank_idx
     seq_len = dataset.get_seq_length(seq_idx)["classes"]
     tag = dataset.get_tag(seq_idx)
 
@@ -120,6 +124,9 @@ def main(argv):
   parser.add_argument('--time_red', type=int, default=1, help="Time-downsampling factor")
   parser.add_argument('--returnn_root', help="Returnn root to use for imports")
   parser.add_argument('--data_key')
+  parser.add_argument(
+    '--silence-use-blanks', help="If true, silence segments are stored with blanks", action="store_true")
+  parser.add_argument('--silence-idx', help="Needs to be provided if silence-use-blanks is true", type=int, default=0)
 
   args = parser.parse_args(argv[1:])
 
