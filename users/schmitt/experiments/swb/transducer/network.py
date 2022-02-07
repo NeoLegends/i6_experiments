@@ -254,7 +254,7 @@ def get_extended_net_dict(
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
-  fast_rec=False, with_silence=False):
+  fast_rec=False, with_silence=False, sep_sil_model=False, sil_idx=0):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
@@ -293,7 +293,8 @@ def get_extended_net_dict(
 
     # for task "search" / search_output_layer
     "output_wo_b0": {
-      "class": "masked_computation", "unit": {"class": "copy"}, "from": "output", "mask": "output/output_emit"},
+      "class": "masked_computation", "unit": {"class": "copy"}, "from": "output",
+      "mask": "output/output_emit" if not with_silence else "output/non_sil_non_blank_mask"},
     "output_wo_b": {"class": "reinterpret_data", "from": "output_wo_b0", "set_sparse_dim": target_num_labels},
     "decision": {
       "class": "decide", "from": "output_wo_b", "loss": "edit_distance", "target": target, 'only_on_search': True},
@@ -530,9 +531,12 @@ def get_extended_net_dict(
           "eval": "self.network.get_config().typed_value('switchout_target')(source, network=self.network)",
           "initial_output": 0 if not with_silence else targetb_blank_idx - 1} if task == "train" and not scheduled_sampling else {
           "class": "copy", "from": "output", "initial_output": 0 if not with_silence else targetb_blank_idx - 1},
-
         "out_str": {
-          "class": "eval", "from": ["prev:out_str", "output_emit", "output"], "initial_output": None,
+          "class": "eval",
+          "from": [
+            "prev:out_str",
+            "output_emit" if not with_silence else "non_sil_non_blank_mask",
+            "output"], "initial_output": None,
           "out_type": {"shape": (), "dtype": "string"},
           "eval": "self.network.get_config().typed_value('out_str')(source, network=self.network)"},
 
@@ -543,11 +547,46 @@ def get_extended_net_dict(
         # This "output_emit" is True on the first label but False otherwise, and False on blank.
         "output_emit": {
           "class": "copy", "from": "output_is_not_blank", "initial_output": True, "is_output_layer": True},
+        # true, if output is silence
+        "output_sil": {"class": "compare", "from": "output_", "value": sil_idx, "kind": "equal",
+          "initial_output": False},
+        "output_blank": {
+          "class": "compare", "from": "output_", "value": targetb_blank_idx, "kind": "equal",
+          "initial_output": False},
+        "non_sil_non_blank_mask": {"class": "combine", "from": ["output/output_emit", "output/output_sil"],
+          "kind": "logical_and"},
+
 
       }, "target": targetb, "size_target": targetb if task == "train" else None,
       "max_seq_len": "max_len_from('base:encoder') * 2"}
 
   net_dict["output"] = get_output_dict(train=True, targetb="targetb")
+
+  if sep_sil_model:
+    net_dict["output"]["unit"]["emit_log_prob0"] = net_dict["output"]["unit"]["emit_log_prob"].copy()
+    net_dict["output"]["unit"]["blank_log_prob0"] = net_dict["output"]["unit"]["blank_log_prob"].copy()
+    net_dict["output"]["unit"].update({
+      # silence model: predict whether the current frame is silence or whether a non-silence segment started
+      "sil_end_prob0": {"class": "linear", "from": "am", "activation": None, "n_out": 1, "is_output_layer": True},
+      "sil_end_prob": {
+        "class": "switch", "condition": "prev:output_blank", "true_from": float("inf"), "false_from": "sil_end_prob0"},
+      "sil_end_log_prob": {"class": "activation", "from": "sil_end_prob", "activation": "log_sigmoid"},
+      "sil_log_prob": {"class": "eval", "from": "sil_end_prob", "eval": "tf.math.log_sigmoid(-source(0))"},
+      # if the non-silence segment has not started yet, the prob of a blank is p(sil_end)*p(blank)
+      # otherwise, if we are inside a non-silence segment, the prob of a blank is just p(blank)
+      "blank_log_prob1": {"class": "combine", "kind": "add", "from": ["blank_log_prob0", "sil_end_log_prob"]},
+      "blank_log_prob": {
+        "class": "switch", "condition": "prev:output_blank",
+        "true_from": "blank_log_prob0", "false_from": "blank_log_prob1"},
+      # if the non-silence segment has not started yet, the prob of emitting a label is p(sil_end)*p(emit)
+      # otherwise, if we are inside a non-silence segment, the prob of emitting a label is just p(emit)
+      "emit_log_prob1": {"class": "combine", "kind": "add", "from": ["emit_log_prob0", "sil_end_log_prob"]},
+      "emit_log_prob": {
+        "class": "switch", "condition": "prev:output_blank", "true_from": "emit_log_prob0",
+        "false_from": "emit_log_prob1"},
+    })
+    net_dict["output"]["unit"]["label_log_prob"]["n_out"] = target_num_labels - 1
+    net_dict["output"]["unit"]["output_log_prob"]["from"] = ["sil_log_prob", "label_emit_log_prob", "blank_log_prob"]
 
   # TODO: what to do during "retrain" when pretraining is disabled by default
   if scheduled_sampling and task == "train":
