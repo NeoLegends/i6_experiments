@@ -21,10 +21,11 @@ import copy
 # global AttNumHeads
 # global EncValuePerHeadDim
 
+
 def add_attention(
   net_dict, att_seg_emb_size, att_seg_use_emb, att_win_size, task, EncValueTotalDim, EncValueDecFactor, EncKeyTotalDim,
-  att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
-  att_seg_emb_query, AttNumHeads, EncValuePerHeadDim, l2, EncKeyPerHeadDim, AttentionDropout):
+  att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
+  AttNumHeads, EncValuePerHeadDim, l2, EncKeyPerHeadDim, AttentionDropout):
   """This function expects a network dictionary of an "extended transducer" model and adds a self-attention mechanism
   according to some parameters set in the returnn config.
 
@@ -46,7 +47,22 @@ def add_attention(
   :return: dict net_dict with added attention mechanism
   """
 
+  assert not (att_area == "win" and att_win_size == "full"), "Currently not implemented since readout is masked"
+
   net_dict = copy.deepcopy(net_dict)
+
+  # during training, the readout layer and the attention are masked to be only calculated in emit steps to save time and
+  # memory
+  net_dict["output"]["unit"].update({
+    "att_masked": {
+      "class": "masked_computation", "mask": "is_label" if task == "train" else "const_true",
+      "from": "prev_non_blank_embed", "unit": {
+        "class": "subnetwork", "from": "data", "subnetwork": {
+          "output": {"class": "copy", "from": "att"}}}},
+    "att_unmask": {"class": "unmask", "from": "att_masked", "mask": "is_label"},
+    "att": {"class": "copy", "from": "att_unmask"},  # [B,L]
+  })
+  readout_level_dict = net_dict["output"]["unit"]["att_masked"]["unit"]["subnetwork"]
 
   att_heads_tag = CodeWrapper(
     "DimensionTag(kind=DimensionTag.Types.Spatial, description='att_heads', dimension=%d)" % AttNumHeads)
@@ -134,81 +150,85 @@ def add_attention(
       "att_val": {
         "class": "reinterpret_data", "from": "att_val0",
         "set_dim_tags": {"stag:enc_val_win:window": att_time_tag}}})
+    readout_level_dict.update({
+      "att_ctx": {"class": "copy", "from": "base:att_ctx"}, "att_val": {"class": "copy", "from": "base:att_val"}
+    })
 
-  def add_global_window():
-    def add_global_with_weight_feedback():
-      net_dict.update({
-        "inv_fertility": {
-          "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1}, })
-      net_dict["output"]["unit"].update({
-        "weight_feedback": {
-          "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
-          "n_out": EncKeyTotalDim},
-        "accum_att_weights": {
-          "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
-          "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": 1, "shape": (None, 1)}}, })
-      net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
-
-      if not (att_seg_use_emb and att_seg_emb_size):
-        net_dict.update({
-          "enc_ctx": {  # (B, T, D)
-            "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
-            "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
-          "enc_val": {"class": "copy", "from": ["encoder"]}, })
-        net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
-                                                               in net_dict["output"]["unit"]["att_energy_in"]["from"]]
-        # see explanation above on the "att" layer
-        if task == "train":
-          net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
-        else:
-          net_dict["output"]["unit"]['att0']["base"] = "base:enc_val"
-      else:
-        raise NotImplementedError
-        # net_dict.update({
-        #   "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"}, })
-        #
-        # net_dict["output"]["unit"].update({
-        #   "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
-        #   "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-        #   "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]}, "att_ctx": {  # (B, T, D)
-        #     "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
-        #     "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}})
-        # for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
-        #   if cond in net_dict["output"]["unit"]:
-        #     net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices" if item == "segment_indices" else item
-        #                                                 for item in net_dict["output"]["unit"][cond]["from"]]
-
-    def add_global_without_weight_feedback():
-      net_dict.update({
-        "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": att_time_tag}}})
-      net_dict["output"]["unit"].update({
-        "att_ctx0": {  # (B, T, D)
-          "class": "linear", "from": ["base:encoder_new"], "activation": None, "with_bias": False,
-          "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
-        "att_ctx": {
-          "class": "copy", "from": ["att_ctx0"]}, "att_val": {  # (B,T,V)
-          "class": "copy", "from": ["base:encoder_new"]}})
-
-      if att_seg_use_emb and att_seg_emb_size:
-        net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
-        net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
-        net_dict["output"]["unit"]["att_ctx"]["from"] = ["att_val0", "embedding0"]
-        net_dict["output"]["unit"].update({
-          "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
-          "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
-          "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-          # "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
-          "att_val": {  # (B,T,V)
-            "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
-              "t": "time"}},
-          "att_val1": {  # (B, T, D)
-            "class": "linear", "from": ["att_val0", "embedding0"], "activation": None, "with_bias": False,
-            "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2},
-        })
-
-    att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
-
-    add_global_without_weight_feedback()
+  # def add_global_window():
+  #   def add_global_with_weight_feedback():
+  #     net_dict.update({
+  #       "inv_fertility": {
+  #         "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1}, })
+  #     net_dict["output"]["unit"].update({
+  #       "weight_feedback": {
+  #         "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
+  #         "n_out": EncKeyTotalDim},
+  #       "accum_att_weights": {
+  #         "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+  #         "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": 1, "shape": (None, 1)}}, })
+  #     net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
+  #
+  #     if not (att_seg_use_emb and att_seg_emb_size):
+  #       net_dict.update({
+  #         "enc_ctx": {  # (B, T, D)
+  #           "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
+  #           "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+  #         "enc_val": {"class": "copy", "from": ["encoder"]}, })
+  #       net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
+  #                                                              in net_dict["output"]["unit"]["att_energy_in"]["from"]]
+  #       # see explanation above on the "att" layer
+  #       if task == "train":
+  #         net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
+  #       else:
+  #         net_dict["output"]["unit"]['att0']["base"] = "base:enc_val"
+  #     else:
+  #       raise NotImplementedError
+  #       # net_dict.update({
+  #       #   "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"}, })
+  #       #
+  #       # net_dict["output"]["unit"].update({
+  #       #   "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+  #       #   "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+  #       #   "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]}, "att_ctx": {  # (B, T, D)
+  #       #     "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
+  #       #     "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}})
+  #       # for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
+  #       #   if cond in net_dict["output"]["unit"]:
+  #       #     net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices" if item == "segment_indices" else item
+  #       #                                                 for item in net_dict["output"]["unit"][cond]["from"]]
+  #
+  #   def add_global_without_weight_feedback():
+  #     net_dict.update({
+  #       "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": att_time_tag}}})
+  #     readout_level_dict.update({
+  #       "att_ctx0": {  # (B, T, D)
+  #         "class": "linear", "from": ["base:base:encoder_new"], "activation": None, "with_bias": False,
+  #         "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+  #       "att_ctx": {
+  #         "class": "copy", "from": ["att_ctx0"]},
+  #       "att_val": {  # (B,T,V)
+  #         "class": "copy", "from": ["base:base:encoder_new"]}})
+  #
+  #     if att_seg_use_emb and att_seg_emb_size:
+  #       net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
+  #       net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
+  #       net_dict["output"]["unit"]["att_ctx"]["from"] = ["att_val0", "embedding0"]
+  #       net_dict["output"]["unit"].update({
+  #         "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
+  #         "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+  #         "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+  #         # "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+  #         "att_val": {  # (B,T,V)
+  #           "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
+  #             "t": "time"}},
+  #         "att_val1": {  # (B, T, D)
+  #           "class": "linear", "from": ["att_val0", "embedding0"], "activation": None, "with_bias": False,
+  #           "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2},
+  #       })
+  #
+  #   att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
+  #
+  #   add_global_without_weight_feedback()
 
   def add_segmental_window():
     def add_clamping():
@@ -308,11 +328,13 @@ def add_attention(
     """Segmental Attention: a segment is defined as current frame + all previous blank frames"""
     if att_area == "seg":
       att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
+
       # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
       # segment_lens)
-      net_dict["output"]["unit"].update({
+      readout_level_dict.update({
         "segments0": {  # [B,t_sliced,D]
-          "class": "slice_nd", "from": "base:encoder", "start": "segment_starts", "size": "segment_lens"},
+          "class": "slice_nd", "from": "base:base:encoder",
+          "start": "base:segment_starts", "size": "base:segment_lens"},
         "segments": {
           "class": "reinterpret_data", "from": "segments0", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
         "att_ctx": {  # [B,D]
@@ -328,20 +350,15 @@ def add_attention(
       add_embedding()
 
   def add_attention_query():
-    net_dict["output"]["unit"]["att_query"] = {  # (B,D)
-      "class": "linear", "from": [att_query_in], "activation": None, "with_bias": False,
+    readout_level_dict["att_query"] = {  # (B,D)
+      "class": "linear", "from": "base:lm", "activation": None, "with_bias": False,
       "n_out": EncKeyTotalDim, "is_output_layer": True if task == "train" else False}
-    if att_seg_emb_query:
-      if att_seg_emb_size == 2:
-        net_dict["output"]["unit"]["att_query"]["from"].append("emb1")
-      else:
-        net_dict["output"]["unit"]["att_query"]["from"].append("emb0")
 
   def add_energies():
     if att_type == "dot":
       assert AttNumHeads == 1
       # use the dot-product to calculate the energies
-      net_dict["output"]["unit"].update({
+      readout_level_dict.update({
         'att_energy0': {  # (B, t_att, 1)
           "class": "dot", "red1": "f", "red2": "f", "var1": "stag:att_t", "var2": None,
           "from": ['att_ctx', 'att_query'], "add_var2_if_empty": False}, "att_energy1": {
@@ -349,7 +366,7 @@ def add_attention(
         "att_energy": {"class": "reinterpret_data", "from": "att_energy1", "set_dim_tags": {"f": att_heads_tag}}})
     elif att_type == "mlp":
       # use an MLP to calculate the energies
-      net_dict["output"]["unit"].update({
+      readout_level_dict.update({
         'att_energy_in': {  # (B, t_att, D)
           "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": EncKeyTotalDim},
         "energy_tanh": {
@@ -360,7 +377,7 @@ def add_attention(
                        "is_output_layer": True if task == "train" else False}})
     elif att_type == "mlp_complex":
       # use more complex MLP to calculate the energies
-      net_dict["output"]["unit"].update({
+      readout_level_dict.update({
         'att_energy_in': {  # (B, t_att, D)
           "class": "combine", "kind": "add", "from": ["att_ctx", "att_query"], "n_out": EncKeyTotalDim},
         "energy_tanh": {"class": "activation", "activation": "tanh", "from": ["att_energy_in"]},  # (B, W, D)
@@ -372,7 +389,7 @@ def add_attention(
                        "is_output_layer": True if task == "train" else False}})
 
   def add_weights():
-    net_dict["output"]["unit"].update({
+    readout_level_dict.update({
       'att_weights0': {
         "class": "softmax_over_spatial", "from": 'att_energy', "axis": "stag:att_t",
         "energy_factor": EncKeyPerHeadDim ** -0.5},
@@ -398,7 +415,7 @@ def add_attention(
     net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
 
   def add_attention_value_heads():
-    net_dict["output"]["unit"].update({
+    readout_level_dict.update({
       "att_val_split0": {
         "class": "split_dims", "axis": "f",
         "dims": (AttNumHeads, -1), "from": "att_val"},
@@ -409,22 +426,22 @@ def add_attention(
   def add_attention_vector():
     # TODO: also, I employed a dirty fix here: during search, the attention vector goes through a redundant switch layer,
     # TODO: which is conditioned on the previous output. this solves the "buggy beam" of the masked attention layer during search
-    if task == "train":
-      # calculate attention in all other cases
-      net_dict["output"]["unit"].update({
-        'att0': {
-          "class": "dot", "from": ["att_val_split", 'att_weights'], "reduce": "stag:att_t", "var1": "f", "var2": None,
-          "add_var2_if_empty": False},  # (B, 1, V)
-        "att": {"class": "merge_dims", "axes": "except_time", "from": "att0"}})
-    else:
-      # calculate attention in all other cases
-      net_dict["output"]["unit"].update({
-        'att0': {
-          "class": "dot", "from": ["att_val_split", 'att_weights'], "reduce": "stag:att_t", "var1": "f",
-          "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
-        "att1": {"class": "merge_dims", "axes": "except_time", "from": "att0"},
-        "att": {
-          "class": "switch", "condition": "prev:output_is_not_blank", "true_from": "att1", "false_from": "att1"}})
+    # if task == "train":
+    # calculate attention in all other cases
+    readout_level_dict.update({
+      'att0': {
+        "class": "dot", "from": ["att_val_split", 'att_weights'], "reduce": "stag:att_t", "var1": "f", "var2": None,
+        "add_var2_if_empty": False},  # (B, 1, V)
+      "att": {"class": "merge_dims", "axes": "except_time", "from": "att0"}})
+    # else:
+    #   # calculate attention in all other cases
+    #   readout_level_dict.update({
+    #     'att0': {
+    #       "class": "dot", "from": ["att_val_split", 'att_weights'], "reduce": "stag:att_t", "var1": "f",
+    #       "var2": None, "add_var2_if_empty": False},  # (B, 1, V)
+    #     "att1": {"class": "merge_dims", "axes": "except_time", "from": "att0"},
+    #     "att": {
+    #       "class": "switch", "condition": "prev:output_is_not_blank", "true_from": "att1", "false_from": "att1"}})
 
   def add_masked_attention():
     net_dict["output"]["unit"].update({

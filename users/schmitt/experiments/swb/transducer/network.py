@@ -252,15 +252,17 @@ import numpy as np
 def get_extended_net_dict(
   pretrain_idx, learning_rate, num_epochs, enc_val_dec_factor,
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
-  l2, beam_size, slow_rnn_inputs, fast_rnn_inputs, readout_inputs, emit_prob_inputs,
+  l2, beam_size, length_model_inputs, prev_att_in_state, use_att,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
-  fast_rec=False, with_silence=False, sep_sil_model=False, sil_idx=0):
+  fast_rec=False, with_silence=False, sep_sil_model=False, sil_idx=None, sos_idx=0):
   """
   :param int|None pretrain_idx: starts at 0. note that this has a default repetition factor of 6
   :return: net_dict or None if pretrain should stop
   :rtype: dict[str,dict[str]|int]|None
   """
   assert ctx_size == "inf" or type(ctx_size) == int
+  assert not with_silence or sil_idx is not None  # if model uses silence -> sil_idx must be set
+
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_reduction}}
   net_dict.update({
     "source": {
@@ -359,14 +361,10 @@ def get_extended_net_dict(
     src = ["lstm%i_fw" % i, "lstm%i_bw" % i]
   net_dict["encoder0"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
 
-  def get_fast_network_dict(ctx_size, rec):
-    if ctx_size == "full":
+  def get_fast_network_dict(rec):
+    if not rec:
       return {
-        "class": "rec", "unit": "nativelstm2", "from": fast_rnn_inputs, "n_out": 128, "L2": l2, "dropout": 0.3,
-        "unit_opts": {"rec_weight_dropout": 0.3}}
-    elif not rec:
-      return {
-        "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": fast_rnn_inputs}
+        "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": length_model_inputs}
     else:
       """
       Use an LSTM which is reset, if the last frame was a segment boundary, i.e. it only uses recurrency WITHIN
@@ -374,7 +372,7 @@ def get_extended_net_dict(
       """
       assert type(ctx_size) == int and rec
       return {
-        "class": "subnetwork", "from": fast_rnn_inputs, "subnetwork": {
+        "class": "subnetwork", "from": length_model_inputs, "subnetwork": {
           # the input is dependent on the previous hidden state (output), if the last frame was not a segment boundary
           # otherwise, the previous hidden state is set to 0, i.e. has no impact on the following calculations
           "prev_out_rec": {"class": "copy", "from": "prev:output"},
@@ -409,6 +407,88 @@ def get_extended_net_dict(
             "class": "eval", "from": ["output_gate", "c"], "eval": "source(0) * source(1)"},
         }
       }
+
+  def get_readout_net():
+    """Readout (per segment): linear layer which is used as input for the label model"""
+    # during training, we mask the readout layer to save time and memory
+    readout_net = {}
+    if task == "search":
+      readout_net["const_true"] = {"class": "constant", "value": True, "dtype": "bool", "with_batch_dim": True}
+    readout_net.update({
+      "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
+      "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
+
+      "lm_masked": {
+        "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_non_blank_embed", "unit": {
+          "class": "subnetwork", "from": "data", "subnetwork": {
+            "input_embed0": {
+              "class": "window", "from": "data", "window_size": 1, "window_left": 0,
+              "window_right": 0} if ctx_size == "inf" else {
+              "class": "window", "from": "data", "window_size": ctx_size, "window_right": 0,
+              "window_left": ctx_size - 1},
+            "input_embed": {"class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
+
+            "lm": {
+              "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
+              "from": ["base:prev:att", "input_embed"] if prev_att_in_state else "input_embed"} if ctx_size == "inf" else {
+              "class": "linear", "activation": "tanh", "n_out": lstm_dim,
+              "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
+
+            "output": {"class": "copy", "from": "lm"}}}},
+      "lm_unmask": {"class": "unmask", "from": "lm_masked", "mask": "prev:output_emit"},
+      "lm": {"class": "copy", "from": "lm_unmask"},  # [B,L]
+
+      "readout_masked": {
+        "class": "masked_computation", "mask": "is_label" if task == "train" else "const_true",
+        "from": "prev_non_blank_embed", "unit": {
+          "class": "subnetwork", "from": "data", "subnetwork": {
+            "readout_in": {
+              "class": "linear", "from": ["base:lm", "base:att"] if use_att else ["base:lm", "base:am", "data"],
+              "activation": None, "n_out": 1000},
+            "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
+            "output": {"class": "copy", "from": "readout"}}}},
+      "readout_unmask": {"class": "unmask", "from": "readout_masked", "mask": "is_label"},
+      "readout": {"class": "copy", "from": "readout_unmask"},  # [B,L]
+    })
+
+    return readout_net
+
+  def get_ce_loss(targetb):
+    if not efficient_loss:
+      loss = {
+        # LOSS OPTION 1 (slow):
+        # use CE on the full output label vector
+        "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
+        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
+        "output_prob": {
+          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
+          "loss": "ce" if task == "train" and not efficient_loss else None,
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}},
+      }
+    else:
+      loss = {
+        # LOSS OPTION 2 (faster):
+        # gather single log prob of the current (to be predicted) label and combine with emit log prob and then use
+        # loss as-is
+        # gather log-prob of current (non-blank) label from vector of all log-probs
+        "label_log_prob_c_masked": {
+          "class": "masked_computation", "mask": "is_label", "from": "label_log_prob", "unit": {
+            "class": "subnetwork", "from": "data", "subnetwork": {
+              "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
+              "output": {"class": "copy", "from": "label_log_prob_c"}}}},
+        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
+        # scale, which is applied to the non-blank loss
+        "const_emit_loss_scale": {"class": "constant", "value": emit_loss_scale},
+        # combine label log-prob with emit log-prob
+        "neg_log_prob_emit": {
+          "class": "eval", "from": ["label_log_prob_c", "emit_log_prob", "const_emit_loss_scale"],
+          "eval": "(-source(0) - source(1)) * source(2)"},
+        "neg_log_prob_blank": {"class": "eval", "from": ["blank_log_prob"], "eval": "-source(0)"}, "neg_log_prob_c": {
+          "class": "switch", "condition": "is_label", "true_from": "neg_log_prob_emit",
+          "false_from": "neg_log_prob_blank", "loss": "as_is" if task == "train" and efficient_loss else None},
+      }
+
+    return loss
 
   def get_output_dict(train, targetb):
     """This is the decoder without attention. The attention is added via attention.py"""
@@ -445,35 +525,8 @@ def get_extended_net_dict(
         "prev_out_is_non_blank": {
           "class": "switch", "condition": "prev:output_emit", "true_from": "2d_emb1", "false_from": "2d_emb0"},
 
-        # Slow Network (per segment)
-        "lm_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit",
-          "from": "prev_non_blank_embed",
-          "unit": {
-            "class": "subnetwork", "from": "data", "subnetwork": {
-              # "input_embed": {"class": "copy", "from": "data"},
-              "input_embed0": {
-                "class": "window", "from": "data", "window_size": 1, "window_left": 0,
-                "window_right": 0} if ctx_size == "inf" else {
-                "class": "window", "from": "data", "window_size": ctx_size, "window_right": 0,
-                "window_left": ctx_size - 1},
-              "input_embed": {"class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
-              "slow_net": {
-                "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
-                "from": slow_rnn_inputs} if ctx_size == "inf" else {
-                "class": "linear", "activation": "tanh", "n_out": lstm_dim,
-                "from": slow_rnn_inputs},
-              "output": {"class": "copy", "from": "slow_net"}}}},
-        "lm_embed_masked": {"class": "copy", "from": "lm_masked"},
-        "lm_embed_unmask": {"class": "unmask", "from": "lm_embed_masked", "mask": "prev:output_emit"},
-        "lm": {"class": "copy", "from": "lm_embed_unmask"},  # [B,L]
-
         # Fast Network (per time-frame)
-        "s": get_fast_network_dict(ctx_size=ctx_size, rec=fast_rec),
-
-        # Readout: linear layer which is used as input for the label model
-        "readout_in": {"class": "linear", "from": readout_inputs, "activation": None, "n_out": 1000},
-        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
+        "s": get_fast_network_dict(rec=fast_rec),
 
         # Label model
         "label_log_prob": {
@@ -482,44 +535,14 @@ def get_extended_net_dict(
 
         # Length model
         "emit_prob0": {
-          "class": "linear", "from": emit_prob_inputs, "activation": None, "n_out": 1, "is_output_layer": True},
+          "class": "linear", "from": "s", "activation": None, "n_out": 1, "is_output_layer": True},
         "emit_log_prob": {"class": "activation", "from": "emit_prob0", "activation": "log_sigmoid"},
         "blank_log_prob": {"class": "eval", "from": "emit_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
-
-        # LOSS OPTION 1 (slow):
-        # use CE on the full output label vector
-        "label_emit_log_prob": {"class": "combine", "kind": "add", "from": ["label_log_prob", "emit_log_prob"]},
-        "output_log_prob": {"class": "copy", "from": ["label_emit_log_prob", "blank_log_prob"]},
-        "output_prob": {
-          "class": "activation", "from": "output_log_prob", "activation": "exp", "target": targetb,
-          "loss": "ce" if task == "train" and not efficient_loss else None,
-          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": label_smoothing, "scale": 1.0}},
-
-        # LOSS OPTION 2 (faster):
-        # gather single log prob of the current (to be predicted) label and combine with emit log prob and then use
-        # loss as-is
-        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
-        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
-        # gather log-prob of current (non-blank) label from vector of all log-probs
-        "label_log_prob_c_masked": {
-          "class": "masked_computation", "mask": "is_label", "from": "label_log_prob", "unit": {
-            "class": "subnetwork", "from": "data", "subnetwork": {
-              "label_log_prob_c": {"class": "gather", "from": "data", "axis": "f", "position": "base:cur_label"},
-              "output": {"class": "copy", "from": "label_log_prob_c"}}}},
-        "label_log_prob_c": {"class": "unmask", "from": "label_log_prob_c_masked", "mask": "is_label"},
-        # scale, which is applied to the non-blank loss
-        "const_emit_loss_scale": {"class": "constant", "value": emit_loss_scale},
-        # combine label log-prob with emit log-prob
-        "neg_log_prob_emit": {"class": "eval", "from": ["label_log_prob_c", "emit_log_prob", "const_emit_loss_scale"],
-          "eval": "(-source(0) - source(1)) * source(2)"},
-        "neg_log_prob_blank": {"class": "eval", "from": ["blank_log_prob"], "eval": "-source(0)"},
-        "neg_log_prob_c": {"class": "switch", "condition": "is_label", "true_from": "neg_log_prob_emit",
-          "false_from": "neg_log_prob_blank", "loss": "as_is" if task == "train" and efficient_loss else None},
 
         # beam search during search/ ground truth during training
         'output': {
           'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
-          "input_type": "log_prob", "initial_output": 0 if not with_silence else targetb_blank_idx - 1,
+          "input_type": "log_prob", "initial_output": sos_idx,
           "cheating": "exclusive" if task == "train" else None,
           "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" else None,
           "custom_score_combine": CodeWrapper("targetb_recomb_recog") if task == "search" else None
@@ -529,8 +552,8 @@ def get_extended_net_dict(
         "output_": {
           "class": "eval", "from": "output",
           "eval": "self.network.get_config().typed_value('switchout_target')(source, network=self.network)",
-          "initial_output": 0 if not with_silence else targetb_blank_idx - 1} if task == "train" and not scheduled_sampling else {
-          "class": "copy", "from": "output", "initial_output": 0 if not with_silence else targetb_blank_idx - 1},
+          "initial_output": sos_idx} if False else {
+          "class": "copy", "from": "output", "initial_output": sos_idx},
         "out_str": {
           "class": "eval",
           "from": [
@@ -562,14 +585,21 @@ def get_extended_net_dict(
 
   net_dict["output"] = get_output_dict(train=True, targetb="targetb")
 
+  net_dict["output"]["unit"].update(get_readout_net())
+  net_dict["output"]["unit"].update(get_ce_loss(targetb="targetb"))
+
   if sep_sil_model:
     net_dict["output"]["unit"]["emit_log_prob0"] = net_dict["output"]["unit"]["emit_log_prob"].copy()
     net_dict["output"]["unit"]["blank_log_prob0"] = net_dict["output"]["unit"]["blank_log_prob"].copy()
     net_dict["output"]["unit"].update({
       # silence model: predict whether the current frame is silence or whether a non-silence segment started
-      "sil_end_prob0": {"class": "linear", "from": "am", "activation": None, "n_out": 1, "is_output_layer": True},
+      "sil_model": {
+        "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2,
+        "from": ["prev_non_blank_embed", "prev_out_is_non_blank", "am"]},
+      "sil_end_prob0": {
+        "class": "linear", "from": "sil_model", "activation": None, "n_out": 1, "is_output_layer": True},
       "sil_end_prob": {
-        "class": "switch", "condition": "prev:output_blank", "true_from": float("inf"), "false_from": "sil_end_prob0"},
+        "class": "switch", "condition": "prev:output_blank", "true_from": CodeWrapper('float("inf")'), "false_from": "sil_end_prob0"},
       "sil_end_log_prob": {"class": "activation", "from": "sil_end_prob", "activation": "log_sigmoid"},
       "sil_log_prob": {"class": "eval", "from": "sil_end_prob", "eval": "tf.math.log_sigmoid(-source(0))"},
       # if the non-silence segment has not started yet, the prob of a blank is p(sil_end)*p(blank)
@@ -584,6 +614,9 @@ def get_extended_net_dict(
       "emit_log_prob": {
         "class": "switch", "condition": "prev:output_blank", "true_from": "emit_log_prob0",
         "false_from": "emit_log_prob1"},
+      "prev_out_is_sil": {{
+        "class": "switch", "condition": "prev:output_sil", "true_from": "2d_emb1", "false_from": "2d_emb0"},
+      }
     })
     net_dict["output"]["unit"]["label_log_prob"]["n_out"] = target_num_labels - 1
     net_dict["output"]["unit"]["output_log_prob"]["from"] = ["sil_log_prob", "label_emit_log_prob", "blank_log_prob"]

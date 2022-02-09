@@ -15,10 +15,9 @@ import numpy as np
 
 class TransducerSWBBaseConfig:
   def __init__(self, vocab, target="orth_classes", target_num_labels=1030, targetb_blank_idx=0, data_dim=40,
-               alignment_same_len=True,
                epoch_split=6, rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
                _attention_type=0, post_config={}, task="train", search_data_key=None, num_epochs=150,
-               label_type="bpe", cleanup_old_models=True):
+               label_type="bpe"):
 
     self.post_config = post_config
 
@@ -72,7 +71,7 @@ class TransducerSWBBaseConfig:
     self.max_seqs = 200
     self.max_seq_length = {target: 75}
     self.truncation = -1
-    self.cleanup_old_models = cleanup_old_models
+    self.cleanup_old_models = {"keep_last_n": 1, "keep_best_n": 1, "keep": [150]}
     self.gradient_clip = 0
     self.adam = True
     self.optimizer_epsilon = 1e-8
@@ -93,11 +92,10 @@ class TransducerSWBBaseConfig:
     self.import_prolog = ["from returnn.tf.util.data import DimensionTag", "import os", "import numpy as np",
                           "from subprocess import check_output, CalledProcessError"]
 
-    if task == "train":
-      self.function_prolog = [_mask, random_mask, transform]
-    else:
-      assert task == "search" and label_type != "phonemes"
-      self.function_prolog = [
+    self.function_prolog = [_mask, random_mask, transform]
+    if task == "search":
+      assert label_type != "phonemes"
+      self.function_prolog += [
         get_vocab_tf,
         get_vocab_sym,
         out_str,
@@ -173,54 +171,44 @@ class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
 
 class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
   def __init__(
-    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim, att_key_dim,
-    att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area, att_query_in,
-    att_seg_emb_query, att_num_heads, readout_inputs,
-    fast_rnn_inputs, slow_rnn_inputs, emit_prob_inputs, label_smoothing,
+    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim,
+    att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
+    att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state,
     scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
-    fast_rec=False, pretrain=True, with_silence=False, sep_sil_model=False,
+    fast_rec=False, pretrain=True, with_silence=False, sep_sil_model=False, sil_idx=None, sos_idx=0,
     train_data_opts=None, dev_data_opts=None, devtrain_data_opts=None, search_data_opts=None, **kwargs):
 
     super().__init__(*args, **kwargs)
 
-    # self._alignment = "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/merboldt_swb_transducer/rna-tf2.blank0.enc6l-grow2l.scratch-lm.rdrop02.lm1-1024.attwb5-drop02.l2_1e_4.mlr50.epoch-150.swap"
-
     self.batch_size = 10000 if self.task == "train" else 4000
     chunk_size = 60
-    # if self.label_type == "bpe":
-    #   time_red = [3, 2]
-    # else:
-    #   assert self.label_type == "phonemes"
-    #   time_red = [1]
     self.chunking = ({
       "data": chunk_size * int(np.prod(time_red)), "alignment": chunk_size}, {
       "data": chunk_size * int(np.prod(time_red)) // 2, "alignment": chunk_size // 2})
     self.accum_grad_multiple_step = 2
 
+    self.function_prolog += [custom_construction_algo]
     if self.task == "train":
       self.function_prolog += [
-        # add_attention,
         switchout_target,
-        custom_construction_algo
       ]
     # TODO check, whether all current combinations of hyperparameters are working for training and search
     self.network = get_extended_net_dict(pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150,
       enc_val_dec_factor=1, target_num_labels=self.target_num_labels, target=self.target, task=self.task,
       targetb_num_labels=self.targetb_num_labels, scheduled_sampling=scheduled_sampling, lstm_dim=lstm_dim, l2=0.0001,
-      beam_size=self.beam_size, slow_rnn_inputs=slow_rnn_inputs, fast_rnn_inputs=fast_rnn_inputs,
-      targetb_blank_idx=self.targetb_blank_idx, readout_inputs=readout_inputs, emit_prob_inputs=emit_prob_inputs,
+      beam_size=self.beam_size, length_model_inputs=length_model_inputs, prev_att_in_state=prev_att_in_state,
+      targetb_blank_idx=self.targetb_blank_idx, use_att=use_attention,
       label_smoothing=label_smoothing, emit_extra_loss=emit_extra_loss, emit_loss_scale=1.0,
       efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size, fast_rec=fast_rec,
-      with_silence=with_silence, sep_sil_model=sep_sil_model)
+      with_silence=with_silence, sep_sil_model=sep_sil_model, sil_idx=sil_idx, sos_idx=sos_idx)
     if use_attention:
       self.network = add_attention(self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb,
         att_win_size=att_win_size, task=self.task, EncValueTotalDim=lstm_dim * 2, EncValueDecFactor=1,
-        EncKeyTotalDim=att_key_dim, att_weight_feedback=att_weight_feedback, att_type=att_type,
+        EncKeyTotalDim=lstm_dim, att_weight_feedback=att_weight_feedback, att_type=att_type,
         att_seg_clamp_size=att_seg_clamp_size, att_seg_left_size=att_seg_left_size,
-        att_seg_right_size=att_seg_right_size, att_area=att_area, att_query_in=att_query_in,
-        att_seg_emb_query=att_seg_emb_query, AttNumHeads=att_num_heads,
+        att_seg_right_size=att_seg_right_size, att_area=att_area, AttNumHeads=att_num_heads,
         EncValuePerHeadDim=int(lstm_dim * 2 // att_num_heads), l2=0.0001, AttentionDropout=0.1,
-        EncKeyPerHeadDim=int(att_key_dim // att_num_heads))
+        EncKeyPerHeadDim=int(lstm_dim // att_num_heads))
 
     if self.task == "train":
       assert train_data_opts and dev_data_opts and devtrain_data_opts
