@@ -1,96 +1,100 @@
 import argparse
 import sys
 import numpy as np
-import os
 
-# dataset = None
+def calc_segment_stats_with_sil(blank_idx, sil_idx):
 
-
-def calc_segment_stats(blank_idx, silence_idx, segment):
-  if segment in ["total", "silence"]:
-    segment_idxs = ":"
-    initial_idx = "0"
-  elif segment == "first":
-    segment_idxs = ":1"
-    initial_idx = "0"
-  elif segment == "except_first":
-    segment_idxs = "1:"
-    initial_idx = "non_blank_idxs[0]"
-  else:
-    raise ValueError("segment definition unknown")
   dataset.init_seq_order()
   seq_idx = 0
-  seg_total_len = 0
-  num_segs = 0
-  num_blanks = 0
-  num_non_blanks = 0
-  num_silence = None
-  if silence_idx is not None:
-    num_silence = 0
+  inter_sil_seg_len = 0
+  init_sil_seg_len = 0
+  final_sil_seg_len = 0
+  label_seg_len = 0
+  num_blank_frames = 0
+  num_label_segs = 0
+  num_sil_segs = 0
+  num_init_sil_segs = 0
+  num_final_sil_segs = 0
+  num_seqs = 0
+
   while dataset.is_less_than_num_seqs(seq_idx):
+    num_seqs += 1
+    # progress indication
     if seq_idx % 1000 == 0:
       complete_frac = dataset.get_complete_frac(seq_idx)
       print("Progress: %.02f" % (complete_frac * 100))
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "data")
+
     non_blank_idxs = np.where(data != blank_idx)[0]
-    num_non_blanks += len(non_blank_idxs)
-    num_blanks += len(data) - len(non_blank_idxs)
-    silence_idxs = None
-    if silence_idx is not None:
-      silence_idxs = np.where(data == silence_idx)[0]
-      num_silence += len(silence_idxs)
-      num_non_blanks -= len(silence_idxs)
+    sil_idxs = np.where(data == sil_idx)[0]
+    num_label_segs += len(non_blank_idxs) - len(sil_idxs)
+    num_sil_segs += len(sil_idxs)
+    num_blank_frames += len(data) - len(non_blank_idxs)
+
     if non_blank_idxs.size == 0:
       seq_idx += 1
       continue
     else:
-      # non_blank_idxs = np.append(non_blank_idxs)
-      prev_i = eval(initial_idx)
+      prev_idx = 0
       try:
-        for i in eval("non_blank_idxs[" + segment_idxs + "]"):
-          # each non-blank idx corresponds to one segment
-          num_segs += 1
-          # the segment length is the difference from the previous border to the current one
-          # for the first and last segment, the result needs to be corrected (see after while)
-          seg_total_len += i - prev_i
-          # in this case, we just want to consider silence segments
-          if segment == "silence" and i not in silence_idxs:
-            num_segs -= 1
-            seg_total_len -= i - prev_i
-          # in this case, we do not want to consider silence segments
-          if segment != "silence" and silence_idx is not None and i in silence_idxs:
-            num_segs -= 1
-            seg_total_len -= i - prev_i
-          prev_i = i
+        for i, idx in enumerate(non_blank_idxs):
+          seg_len = idx - prev_idx
+          if prev_idx == 0:
+            seg_len += 1
+
+          if idx in sil_idxs:
+            if i == 0:
+              init_sil_seg_len += seg_len
+              num_init_sil_segs += 1
+            elif i == len(non_blank_idxs) - 1:
+              final_sil_seg_len += seg_len
+              num_final_sil_segs += 1
+            else:
+              inter_sil_seg_len += seg_len
+          else:
+            label_seg_len += seg_len
+
+          prev_idx = idx
       except IndexError:
         continue
 
     seq_idx += 1
 
-  # the first segment is always 1 too short
-  if segment == "first":
-    seg_total_len += num_segs
+  mean_init_sil_len = init_sil_seg_len / num_init_sil_segs if num_init_sil_segs > 0 else 0
+  mean_final_sil_len = final_sil_seg_len / num_final_sil_segs if num_final_sil_segs > 0 else 0
+  mean_inter_sil_len = inter_sil_seg_len / (num_sil_segs - num_init_sil_segs - num_final_sil_segs) if inter_sil_seg_len > 0 else 0
+  mean_total_sil_len = (init_sil_seg_len + final_sil_seg_len + inter_sil_seg_len) / num_seqs
 
-  mean_seg_len = seg_total_len / num_segs
+  mean_label_len = label_seg_len / num_label_segs
 
-  filename = "mean.seg.len"
-  mode = "w"
-  if os.path.exists(filename):
-    mode = "a"
-  with open(filename, mode) as f:
-    f.write(segment + ": " + str(mean_seg_len) + "\n")
+  mean_seq_len = (num_blank_frames + num_sil_segs + num_label_segs) / num_seqs
 
-  filename = "blank_ratio"
-  if not os.path.exists(filename):
-    with open(filename, "w+") as f:
-      f.write("Blanks: " + str(num_blanks) + "\n")
-      if silence_idx is None:
-        f.write("Non Blanks: " + str(num_non_blanks) + "\n")
-      else:
-        f.write("Non Silence: " + str(num_non_blanks) + "\n")
-        f.write("Silence: " + str(num_silence) + "\n")
-
+  filename = "statistics"
+  with open(filename, "w+") as f:
+    f.write("Segment statistics: \n\n")
+    f.write("\tSilence: \n")
+    f.write("\t\tInitial:\n")
+    f.write("\t\t\tMean length: %f \n" % mean_init_sil_len)
+    f.write("\t\t\tNum segments: %f \n" % num_init_sil_segs)
+    f.write("\t\tIntermediate:\n")
+    f.write("\t\t\tMean length: %f \n" % mean_inter_sil_len)
+    f.write("\t\t\tNum segments: %f \n" % (num_sil_segs - num_init_sil_segs - num_final_sil_segs))
+    f.write("\t\tFinal:\n")
+    f.write("\t\t\tMean length: %f \n" % mean_final_sil_len)
+    f.write("\t\t\tNum segments: %f \n" % num_final_sil_segs)
+    f.write("\t\tTotal:\n")
+    f.write("\t\t\tMean length: %f \n" % mean_total_sil_len)
+    f.write("\t\t\tNum segments: %f \n" % num_sil_segs)
+    f.write("\n")
+    f.write("\tNon-silence: \n")
+    f.write("\t\tMean length: %f \n" % mean_label_len)
+    f.write("\t\tNum segments: %f \n" % num_label_segs)
+    f.write("\n")
+    f.write("\n")
+    f.write("Sequence statistics: \n\n")
+    f.write("\tMean length: %f \n" % mean_seq_len)
+    f.write("\tNum sequences: %f \n" % num_seqs)
 
 def init(hdf_file, seq_list_filter_file):
   rnn.init_better_exchook()
@@ -117,14 +121,9 @@ def main():
   arg_parser.add_argument("hdf_file", help="hdf file which contains the extracted alignments of some corpus")
   arg_parser.add_argument("--seq-list-filter-file", help="whitelist of sequences to use", default=None)
   arg_parser.add_argument("--blank-idx", help="the blank index in the alignment", default=0, type=int)
-  arg_parser.add_argument("--silence-idx", help="the blank index in the alignment", default=None, type=int)
-  arg_parser.add_argument("--segment", help="over which segments to calculate the statistics: 'total', 'first', "
-                                            "'except_first', 'all' (default: 'all')", default="all")
+  arg_parser.add_argument("--sil-idx", help="the blank index in the alignment", default=None, type=int)
   arg_parser.add_argument("--returnn-root", help="path to returnn root")
   args = arg_parser.parse_args()
-  assert args.segment in ["first", "except_first", "all", "total", "silence"]
-  if args.segment == "silence":
-    assert args.silence_idx is not None
   sys.path.insert(0, args.returnn_root)
   global rnn
   import returnn.__main__ as rnn
@@ -132,11 +131,7 @@ def main():
   init(args.hdf_file, args.seq_list_filter_file)
 
   try:
-    if args.segment == "all":
-      for seg in ["total", "first", "except_first"]:
-        calc_segment_stats(args.blank_idx, args.silence_idx, seg)
-    else:
-      calc_segment_stats(args.blank_idx, args.silence_idx, args.segment)
+    calc_segment_stats_with_sil(args.blank_idx, args.sil_idx)
   except KeyboardInterrupt:
     print("KeyboardInterrupt")
     sys.exit(1)
