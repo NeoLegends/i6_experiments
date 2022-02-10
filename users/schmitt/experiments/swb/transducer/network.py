@@ -650,6 +650,8 @@ def get_extended_net_dict(
 
 
 def custom_construction_algo(idx, net_dict):
+  if idx > 30:
+    return None
   net_dict["#config"] = {}
   if idx is not None:
     # learning rate warm up
@@ -714,10 +716,7 @@ def custom_construction_algo(idx, net_dict):
   except KeyError:
     pass
 
-  # We use this pretrain construction during the whole training time
-  if idx is not None and idx % epoch_split == 0 and idx > num_epochs:
-    # Stop pretraining now.
-    return None
+  net_dict["output"]["unit"]["output_prob"]["loss_opts"]["label_smoothing"] = 0
 
   return net_dict
 
