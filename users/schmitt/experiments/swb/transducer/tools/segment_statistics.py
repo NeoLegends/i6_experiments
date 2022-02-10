@@ -67,6 +67,7 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
   mean_total_sil_len = (init_sil_seg_len + final_sil_seg_len + inter_sil_seg_len) / num_seqs
 
   mean_label_len = label_seg_len / num_label_segs
+  mean_total_label_len = label_seg_len / num_seqs
 
   mean_seq_len = (num_blank_frames + num_sil_segs + num_label_segs) / num_seqs
 
@@ -83,12 +84,13 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
     f.write("\t\tFinal:\n")
     f.write("\t\t\tMean length: %f \n" % mean_final_sil_len)
     f.write("\t\t\tNum segments: %f \n" % num_final_sil_segs)
-    f.write("\t\tTotal:\n")
+    f.write("\t\tTotal per sequence:\n")
     f.write("\t\t\tMean length: %f \n" % mean_total_sil_len)
     f.write("\t\t\tNum segments: %f \n" % num_sil_segs)
     f.write("\n")
     f.write("\tNon-silence: \n")
-    f.write("\t\tMean length: %f \n" % mean_label_len)
+    f.write("\t\tMean length per segment: %f \n" % mean_label_len)
+    f.write("\t\tMean length per sequence: %f \n" % mean_total_label_len)
     f.write("\t\tNum segments: %f \n" % num_label_segs)
     f.write("\n")
     f.write("\n")
