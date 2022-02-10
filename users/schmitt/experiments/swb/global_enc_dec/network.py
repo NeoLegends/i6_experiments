@@ -1,0 +1,178 @@
+def get_net_dict(lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red):
+  att_key_per_head_dim = att_key_dim // att_num_heads
+  net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
+  net_dict.update({
+    "source": {
+      "class": "eval",
+      "eval": "self.network.get_config().typed_value('transform')(source(0, as_data=True), network=self.network)"},
+    "source0": {"class": "split_dims", "axis": "F", "dims": (-1, 1), "from": "source"},  # (T,40,1)
+
+    # Lingvo: ep.conv_filter_shapes = [(3, 3, 1, 32), (3, 3, 32, 32)],  ep.conv_filter_strides = [(2, 2), (2, 2)]
+    "conv0": {
+      "class": "conv", "from": "source0", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
+      "with_bias": True, "auto_use_channel_first": False},  # (T,40,32)
+    "conv0p": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv0",
+      "use_channel_first": False},  # (T,20,32)
+    "conv1": {
+      "class": "conv", "from": "conv0p", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
+      "with_bias": True, "auto_use_channel_first": False},  # (T,20,32)
+    "conv1p": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv1",
+      "use_channel_first": False},  # (T,10,32)
+    "conv_merged": {"class": "merge_dims", "from": "conv1p", "axes": "static"}})
+
+  # Add encoder BLSTM stack.
+  src = "conv_merged"
+  num_lstm_layers = 6
+  # time_reduction = [3, 2]
+  if num_lstm_layers >= 1:
+    net_dict.update({
+      "lstm0_fw": {
+        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "L2": l2, "direction": 1, "from": src,
+        "trainable": True}, "lstm0_bw": {
+        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "L2": l2, "direction": -1, "from": src,
+        "trainable": True}})
+    src = ["lstm0_fw", "lstm0_bw"]
+  for i in range(1, num_lstm_layers):
+    red = time_red[i - 1] if (i - 1) < len(time_red) else 1
+    net_dict.update({
+      "lstm%i_pool" % (i - 1): {"class": "pool", "mode": "max", "padding": "same", "pool_size": (red,), "from": src}})
+    src = "lstm%i_pool" % (i - 1)
+    net_dict.update({
+      "lstm%i_fw" % i: {
+        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "L2": l2, "direction": 1, "from": src, "dropout": 0.3,
+        "trainable": True}, "lstm%i_bw" % i: {
+        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "L2": l2, "direction": -1, "from": src,
+        "dropout": 0.3, "trainable": True}})
+    src = ["lstm%i_fw" % i, "lstm%i_bw" % i]
+  net_dict["encoder"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
+
+  net_dict.update({
+    "enc_ctx": {"class": "linear", "activation": None, "with_bias": False, "from": ["encoder"], "n_out": att_key_dim},
+    # preprocessed_attended in Blocks
+    "inv_fertility": {
+      "class": "linear", "activation": "sigmoid", "with_bias": False, "from": ["encoder"], "n_out": att_num_heads},
+    "enc_value": {"class": "split_dims", "axis": "F", "dims": (att_num_heads, -1), "from": ["encoder"]},
+    # (B, enc-T, H, D'/H)
+
+    "output": {
+      "class": "rec", "from": [], "unit": {
+        'output': {
+          'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"],
+          "initial_output": sos_idx},
+        "end": {"class": "compare", "from": ["output"], "value": 0},
+        'target_embed': {
+          'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
+          "initial_output": sos_idx},  # feedback_input
+        "weight_feedback": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
+          "n_out": att_key_dim},
+        "s_transformed": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["s"], "n_out": att_key_dim},
+        "energy_in": {
+          "class": "combine", "kind": "add", "from": ["base:enc_ctx", "weight_feedback", "s_transformed"],
+          "n_out": att_key_dim}, "energy_tanh": {"class": "activation", "activation": "tanh", "from": ["energy_in"]},
+        "energy": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": att_num_heads},
+        # (B, enc-T, H)
+        "att_weights": {
+          "class": "softmax_over_spatial", "from": ["energy"], "energy_factor": att_key_per_head_dim ** -0.5},
+        "accum_att_weights": {
+          "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+          "eval": "source(0) + source(1) * source(2) * 0.5",
+          "out_type": {"dim": att_num_heads, "shape": (None, att_num_heads)}},
+        "att0": {"class": "generic_attention", "weights": "att_weights", "base": "base:enc_value"},  # (B, H, V)
+        "att": {"class": "merge_dims", "axes": "except_batch", "from": ["att0"]},  # (B, H*V)
+        "s": {"class": "rec", "unit": "nativelstm2", "from": ["prev:target_embed", "prev:att"], "n_out": lstm_dim},
+        # transform
+        "readout_in": {"class": "linear", "from": ["s", "att"], "activation": None, "n_out": 1000},
+        # merge + post_merge bias
+        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
+        "output_prob": {
+          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "bpe", "loss": "ce",
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}}, "target": "bpe",
+          "max_seq_len": "max_len_from('base:encoder')"},
+
+    "decision": {
+      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
+      }
+    }
+  })
+
+  return net_dict
+
+
+
+
+def custom_construction_algo(idx, net_dict):
+  import numpy as np
+
+  if idx > 30:
+    return None
+
+  net_dict["#config"] = {}
+  if idx is not None:
+    # learning rate warm up
+    lr_warmup = list(np.linspace(net_dict["#info"]["learning_rate"] * 0.1, net_dict["#info"]["learning_rate"], num=10))
+    if idx < len(lr_warmup):
+      net_dict["#config"]["learning_rate"] = lr_warmup[idx]
+
+    # encoder construction
+    start_num_lstm_layers = 2
+    final_num_lstm_layers = 6
+    num_lstm_layers = final_num_lstm_layers
+    if idx is not None:
+      idx = max(idx, 0) // 6  # each index is used 6 times
+      num_lstm_layers = idx + start_num_lstm_layers  # 2, 3, 4, 5, 6 (each for 6 epochs)
+      idx = num_lstm_layers - final_num_lstm_layers
+      num_lstm_layers = min(num_lstm_layers, final_num_lstm_layers)
+
+    if final_num_lstm_layers > start_num_lstm_layers:
+      start_dim_factor = 0.5
+      # grow_frac values: 0, 1/4, 1/2, 3/4, 1
+      grow_frac = 1.0 - float(final_num_lstm_layers - num_lstm_layers) / (final_num_lstm_layers - start_num_lstm_layers)
+      # dim_frac values: 0.5, 5/8, 3/4, 7/8, 1
+      dim_frac = start_dim_factor + (1.0 - start_dim_factor) * grow_frac
+    else:
+      dim_frac = 1.
+
+    net_dict["#info"].update({
+      "dim_frac": dim_frac, "num_lstm_layers": num_lstm_layers, "pretrain_idx": idx})
+
+    time_reduction = net_dict["#info"]["time_red"] if num_lstm_layers >= 3 else [np.prod(net_dict["#info"]["time_red"])]
+
+    # Add encoder BLSTM stack
+    src = "conv_merged"
+    lstm_dim = net_dict["#info"]["lstm_dim"]
+    l2 = net_dict["#info"]["l2"]
+    if num_lstm_layers >= 1:
+      net_dict.update({
+        "lstm0_fw": {
+          "class": "rec", "unit": "nativelstm2", "n_out": int(lstm_dim * dim_frac), "L2": l2, "direction": 1,
+          "from": src, "trainable": True},
+        "lstm0_bw": {
+          "class": "rec", "unit": "nativelstm2", "n_out": int(lstm_dim * dim_frac), "L2": l2, "direction": -1,
+          "from": src, "trainable": True}})
+      src = ["lstm0_fw", "lstm0_bw"]
+    for i in range(1, num_lstm_layers):
+      red = time_reduction[i - 1] if (i - 1) < len(time_reduction) else 1
+      net_dict.update({
+        "lstm%i_pool" % (i - 1): {"class": "pool", "mode": "max", "padding": "same", "pool_size": (red,), "from": src}})
+      src = "lstm%i_pool" % (i - 1)
+      net_dict.update({
+        "lstm%i_fw" % i: {
+          "class": "rec", "unit": "nativelstm2", "n_out": int(lstm_dim * dim_frac), "L2": l2, "direction": 1,
+          "from": src, "dropout": 0.3 * dim_frac, "trainable": True}, "lstm%i_bw" % i: {
+          "class": "rec", "unit": "nativelstm2", "n_out": int(lstm_dim * dim_frac), "L2": l2, "direction": -1,
+          "from": src, "dropout": 0.3 * dim_frac, "trainable": True}})
+      src = ["lstm%i_fw" % i, "lstm%i_bw" % i]
+    net_dict["encoder"] = {"class": "copy", "from": src}  # dim: EncValueTotalDim
+
+
+
+  # Use label smoothing only at the very end.
+  net_dict["output"]["unit"]["output_prob"]["loss_opts"]["label_smoothing"] = 0
+
+
+  return net_dict
