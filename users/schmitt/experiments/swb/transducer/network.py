@@ -558,7 +558,7 @@ def get_extended_net_dict(
           "class": "eval",
           "from": [
             "prev:out_str",
-            "output_emit" if not with_silence else "non_sil_non_blank_mask",
+            "output_emit" if not with_silence else "output_is_non_sil_label",
             "output"], "initial_output": None,
           "out_type": {"shape": (), "dtype": "string"},
           "eval": "self.network.get_config().typed_value('out_str')(source, network=self.network)"},
@@ -566,18 +566,24 @@ def get_extended_net_dict(
         "output_is_not_blank": {
           "class": "compare", "from": "output_", "value": targetb_blank_idx, "kind": "not_equal",
           "initial_output": True},
-
-        # This "output_emit" is True on the first label but False otherwise, and False on blank.
-        "output_emit": {
-          "class": "copy", "from": "output_is_not_blank", "initial_output": True, "is_output_layer": True},
-        # true, if output is silence
-        "output_sil": {"class": "compare", "from": "output_", "value": sil_idx, "kind": "equal",
+        "output_is_sil": {"class": "compare", "from": "output_", "value": sil_idx, "kind": "equal",
           "initial_output": False},
-        "output_blank": {
+        "output_is_not_sil": {
+          "class": "compare", "from": "output_", "value": sil_idx, "kind": "not_equal", "initial_output": True},
+        "output_is_blank": {
           "class": "compare", "from": "output_", "value": targetb_blank_idx, "kind": "equal",
           "initial_output": False},
-        "non_sil_non_blank_mask": {"class": "combine", "from": ["output/output_emit", "output/output_sil"],
-          "kind": "logical_and"},
+        "output_is_non_sil_label": {
+          "class": "combine", "from": ["output_is_not_blank", "output/output_sil"], "kind": "logical_and"
+        },
+
+        # This "output_emit" is True on the first label and whenever a label is output
+        # If there is a separate sil model, then this is only true if a non-silence label is output
+        "output_emit": {
+          "class": "copy", "from": "output_is_not_blank",
+          "initial_output": True, "is_output_layer": True} if not sep_sil_model else {
+          "class": "copy", "from": "output_is_non_sil_label"
+        },
 
 
       }, "target": targetb, "size_target": targetb if task == "train" else None,
@@ -614,9 +620,9 @@ def get_extended_net_dict(
       "emit_log_prob": {
         "class": "switch", "condition": "prev:output_blank", "true_from": "emit_log_prob0",
         "false_from": "emit_log_prob1"},
-      "prev_out_is_sil": {{
+      "prev_out_is_sil": {
         "class": "switch", "condition": "prev:output_sil", "true_from": "2d_emb1", "false_from": "2d_emb0"},
-      }
+
     })
     net_dict["output"]["unit"]["label_log_prob"]["n_out"] = target_num_labels - 1
     net_dict["output"]["unit"]["output_log_prob"]["from"] = ["sil_log_prob", "label_emit_log_prob", "blank_log_prob"]
