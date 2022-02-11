@@ -188,10 +188,10 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     self.accum_grad_multiple_step = 2
 
     self.function_prolog += [custom_construction_algo]
-    if self.task == "train":
-      self.function_prolog += [
-        switchout_target,
-      ]
+    # if self.task == "train":
+    #   self.function_prolog += [
+    #     switchout_target,
+    #   ]
     # TODO check, whether all current combinations of hyperparameters are working for training and search
     self.network = get_extended_net_dict(pretrain_idx=None, learning_rate=self.learning_rate, num_epochs=150,
       enc_val_dec_factor=1, target_num_labels=self.target_num_labels, target=self.target, task=self.task,
