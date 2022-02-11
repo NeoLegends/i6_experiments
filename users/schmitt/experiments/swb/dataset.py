@@ -122,10 +122,11 @@ def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_cac
     "sprintConfigStr": args, "suppress_load_seqs_print": True,  # less verbose
     "input_stddev": 3.}
 
-  if "bpe_file" in vocab:
-    d["bpe"] = vocab
-  else:
-    d["orth_vocab"] = vocab
+  if vocab is not None:
+    if "bpe_file" in vocab:
+      d["bpe"] = vocab
+    else:
+      d["orth_vocab"] = vocab
 
   partition_epochs_opts = {
     "partition_epoch": epoch_split,
