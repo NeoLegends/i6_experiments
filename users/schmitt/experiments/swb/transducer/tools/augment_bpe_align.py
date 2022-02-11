@@ -17,8 +17,10 @@ def create_augmented_alignment():
   dataset.init_seq_order()
   seq_idx = 0
   seg_total_len = 0
+  sil_idx = 0
   num_segs = 0
   num_plotted = 0
+  # phon_to_idx = {v: k for k, v in phoneme_vocab.items()}
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx < float("inf"):
     if seq_idx % 1000 == 0:
       complete_frac = dataset.get_complete_frac(seq_idx)
@@ -27,39 +29,123 @@ def create_augmented_alignment():
     orth = dataset.get_data(seq_idx, "data")
     bpe_align = dataset.get_data(seq_idx, "bpe_align")
     phoneme_align = dataset.get_data(seq_idx, "phoneme_align")
-    if len(orth) > 5:
-      # print([word_vocab[idx] for idx in orth])
-      # print([bpe_vocab[idx] for idx in bpe_align])
-      # print([phoneme_vocab[idx] for idx in phoneme_align])
-      # print([[element for element in lexicon.iter("lemma") if element.find("orth").text == word_vocab[idx]][0].find("phon").text for idx in orth])
-      plot_aligns(bpe_align, phoneme_align, bpe_align, seq_idx)
-      num_plotted += 1
+    # if len(orth) > 5:
+    words = [word_vocab[idx] for idx in orth]
+    # print(words)
+    bpes = [bpe_vocab[idx] for idx in bpe_align]
+    # print(bpes)
+    phonemes = [phoneme_vocab[idx] for idx in phoneme_align]
+    # print(phoneme_align)
+    print([word_vocab[idx] for idx in orth])
+    word_phon_map = [[element for element in lexicon.iter("lemma") if element.find("orth").text == word_vocab[idx]][0].find("phon").text for idx in orth if word_vocab[idx] != "<unk>"]
+    print(word_phon_map)
+    # print(word_phon_map)
 
-      if num_plotted > 20:
-        break
+    rem_num = len(phoneme_align) % 6
+    upscaled_bpe_align = [i for j in bpe_align[:-1] for i in ([bpe_blank_idx] * 5) + [j]]
+    if rem_num == 0:
+      upscaled_bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * 5) + [j]]
+    else:
+      upscaled_bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * (rem_num - 1)) + [j]]
+
+    word_bpe_map = []
+    mapping = []
+    prev_bound = 0
+    for i, bpe_idx in enumerate(upscaled_bpe_align):
+      if bpe_idx != bpe_blank_idx:
+        seg_size = i - prev_bound
+        prev_bound += seg_size
+        if prev_bound == seg_size:
+          seg_size += 1
+          # prev_bound += seg_size - 1
+        if bpe_vocab[bpe_idx].endswith("@@"):
+          mapping.append([bpe_idx, seg_size])
+        else:
+          mapping.append([bpe_idx, seg_size])
+          total_size = sum(size for _, size in mapping)
+          mapping = [[label, size / total_size] for label, size in mapping]
+          word_bpe_map.append(mapping)
+          mapping = []
+
+    # print("UPSCALED BPE ALIGN: ", upscaled_bpe_align)
+    # print("WORD BPE MAP: ", word_bpe_map)
+
+    word_bounds = []
+    sil_bounds = []
+    new_bpe_align = []
+    align_idx = 0
+    # go through each word to phoneme mapping
+    for mapping in word_phon_map:
+      # print(mapping)
+      word_phons = mapping.split(" ")
+      # word_phons = [phon_to_idx[phon] for phon in word_phons]
+      last_phon_in_word = word_phons[-1] + "{#+#}@f.0"
+      last_phon_in_word = phon_to_idx[last_phon_in_word]
+      # go through the phoneme align, starting from the word boundary of the previous word
+      # print("START ALIGN IDX: ", align_idx)
+      # print("LAST PHON IDX: ", last_phon_in_word)
+      # print("REM ALIGN: ", phoneme_align[align_idx:])
+      for i, phon_idx in enumerate(phoneme_align[align_idx:]):
+        if phon_idx == sil_idx:
+          word_bounds.append(align_idx + i)
+          sil_bounds.append(align_idx + i)
+        # store word end positions, update the align_idx and go to the next word mapping
+        elif phon_idx == last_phon_in_word:
+          word_bounds.append(align_idx + i)
+          align_idx = align_idx + i + 1
+          break
+
+    # print("WORD BOUNDS: ", word_bounds)
+    # print("SIL BOUNDS: ", sil_bounds)
+
+    bpe_sil_align = [bpe_blank_idx] * len(phoneme_align)
+    prev_bound = -1
+    bpe_idx = 0
+    for bound in word_bounds:
+      if bound in sil_bounds:
+        bpe_sil_align[bound] = sil_idx
+        prev_bound = bound
+      else:
+        size = bound - prev_bound
+        if prev_bound == 0:
+          size += 1
+        bpe_map = word_bpe_map[bpe_idx]
+        # print("BPE MAP: ", bpe_map)
+        # print("BOUND: ", bound)
+        for bpe, frac in bpe_map:
+          # print("PREV BOUND: ", prev_bound)
+          bpe_sil_align[prev_bound + int(round(size * frac, 0))] = bpe
+          prev_bound += int(round(size * frac, 0))
+        bpe_idx += 1
+        prev_bound = bound
+
+    # print("BPE SIL ALIGN: ", bpe_sil_align)
+
+    # plot_aligns(upscaled_bpe_align, phoneme_align, bpe_sil_align, seq_idx)
+    # num_plotted += 1
+
+    # if num_plotted > 0:
+    #   break
 
     seq_idx += 1
 
 
 def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
-  rem_num = len(phoneme_align) % 6
-  bpe_align = [
-    i for j in bpe_align[:-1] for i in ([bpe_blank_idx] * 5) + [j]]
-  print("REM NUM: ", rem_num)
-  print("LEN BPE: ", len(bpe_align))
-  print("LEN PHON: ", len(phoneme_align))
-  if rem_num == 0:
-    bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * 5) + [j]]
-  else:
-    bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * (rem_num - 1)) + [j]]
-  bpe_silence_align = bpe_align
+  # rem_num = len(phoneme_align) % 6
+  # bpe_align = [
+  #   i for j in red_bpe_align[:-1] for i in ([bpe_blank_idx] * 5) + [j]]
+  # print(bpe_align)
+  # if rem_num == 0:
+  #   bpe_align += [i for j in red_bpe_align[-1:] for i in ([bpe_blank_idx] * 5) + [j]]
+  # else:
+  #   bpe_align += [i for j in red_bpe_align[-1:] for i in ([bpe_blank_idx] * (rem_num - 1)) + [j]]
   matrix = np.concatenate(
     [np.array([[0 if i == bpe_blank_idx else 1 for i in bpe_align]]),
      np.array([[0 if i == bpe_blank_idx else 1 for i in bpe_silence_align]]),
      np.array([[0 if i == phoneme_blank_idx else 1 for i in phoneme_align]])],
     axis=0
   )
-
+  print(bpe_align)
   bpe_align = np.array(bpe_align)
   bpe_silence_align = np.array(bpe_silence_align)
   phoneme_align = np.array(phoneme_align)
@@ -76,24 +162,15 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
   phoneme_labels = phoneme_align[phoneme_align != phoneme_blank_idx]
   phoneme_labels = [phoneme_vocab[i] for i in phoneme_labels]
 
-  plt.figure(figsize=(10, 2), constrained_layout=True)
+  plt.figure(figsize=(10, 5), constrained_layout=True)
   ax = plt.gca()
   # fig = plt.gcf()
   # fig.set_size_inches(10, 2)
   matshow = ax.matshow(matrix, aspect="auto", cmap=plt.cm.get_cmap("Blues"))
   # # create second x axis for hmm alignment labels and plot same matrix
   hmm_ax = ax.twiny()
-  # bpe_silence_ax = ax.twiny()
-  # # set x and y axis for target alignment axis
-  # if not options.presentation_mode:
-  #   ax.set_title(title + "_head" + str(head), y=1.1)
-  #
-  # ax.set_yticks(bpe_yticks)
-  # ax.yaxis.set_major_formatter(ticker.NullFormatter())
-  # ax.set_yticks(bpe_yticks_minor, minor=True)
-  # ax.set_yticklabels(target_align_major, fontsize=17, minor=True)
-  # ax.tick_params(axis="y", which="minor", length=0)
-  # ax.tick_params(axis="y", which="major", length=10)
+  bpe_silence_ax = ax.twiny()
+
   #
   ax.set_xticks(list(bpe_ticks))
   # ax.xaxis.set_major_formatter(ticker.NullFormatter())
@@ -109,12 +186,13 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
   # # for tick in ax.xaxis.get_minor_ticks():
   # #   tick.label1.set_horizontalalignment("center")
 
-  # bpe_silence_ax.set_xticks(list(bpe_silence_ticks))
-  # bpe_silence_ax.set_xticklabels(list(bpe_silence_labels))
+  bpe_silence_ax.set_xlim(ax.get_xlim())
+  bpe_silence_ax.set_xticks(list(bpe_silence_ticks))
+  bpe_silence_ax.set_xticklabels(list(bpe_silence_labels))
   # bpe_silence_ax.xaxis.tick_top()
   # bpe_silence_ax.set_xlabel("BPE + Silence Alignment")
-  # bpe_silence_ax.xaxis.set_label_position('top')
-  # bpe_silence_ax.spines['top'].set_position(('outward', 50))
+  bpe_silence_ax.xaxis.set_label_position('top')
+  bpe_silence_ax.spines['top'].set_position(('outward', 50))
 
   # # set x ticks and labels and positions for hmm axis
   hmm_ax.set_xticks(phoneme_ticks)
@@ -137,6 +215,7 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
   # time_ax.set_xticklabels(time_xticks_labels, fontsize=17)
 
   plt.savefig("plot%s.png" % seq_idx)
+  plt.close()
 
 
 def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexicon_file, bpe_blank, phoneme_blank):
@@ -149,6 +228,7 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
   global lexicon
   global bpe_blank_idx
   global phoneme_blank_idx
+  global phon_to_idx
 
   bpe_blank_idx = bpe_blank
   phoneme_blank_idx = phoneme_blank
@@ -160,9 +240,11 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
   bpe_silence_vocab = bpe_vocab.copy()
   bpe_silence_vocab[bpe_blank + 1] = "[SILENCE]"
   with open(phoneme_vocab_file, "r") as f:
-    phoneme_vocab = ast.literal_eval(f.read())
-    phoneme_vocab = {int(v): k.split("{")[0] for k, v in phoneme_vocab.items()}
+    phon_to_idx = ast.literal_eval(f.read())
+    phon_to_idx = {k: int(v) for k, v in phon_to_idx.items()}
+    phoneme_vocab = {int(v): k.split("{")[0] for k, v in phon_to_idx.items()}
     phoneme_vocab[phoneme_blank] = "<b>"
+    phon_to_idx["<b>"] = phoneme_blank
   word_vocab_file = "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/swb1/dependencies/words/vocab_json"
   with open(word_vocab_file, "r") as f:
     word_vocab = ast.literal_eval(f.read())
@@ -197,6 +279,8 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
         "vocab_file": "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/swb1/dependencies/words/vocab_json",
         "unknown_label": "<unk>"},
       'suppress_load_seqs_print': True}
+
+
 
   dataset_dict = {
     'class': 'MetaDataset',
