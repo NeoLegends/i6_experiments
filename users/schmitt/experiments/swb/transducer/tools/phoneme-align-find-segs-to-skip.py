@@ -42,11 +42,11 @@ def hdf_dump_from_dataset(dataset, parser_args):
     blank_mask = [True if i == j else False for i, j in zip(data[:-1], data[1:])] + [False]
     data[blank_mask] = blank_idx
 
-    data_no_sil_no_blanks = data[data != blank_idx]
-    data_no_sil_no_blanks = data_no_sil_no_blanks[data_no_sil_no_blanks != sil_idx]
+    data_no_blanks = data[data != blank_idx]
+    # data_no_sil_no_blanks = data_no_sil_no_blanks[data_no_sil_no_blanks != sil_idx]
 
     for red in time_reds:
-      if len(data) / red < len(data_no_sil_no_blanks) + 1:
+      if len(data) / red < len(data_no_blanks):
         segs_to_skip[red].append(dataset.get_tag(seq_idx))
 
     seq_idx += 1
