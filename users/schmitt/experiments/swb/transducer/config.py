@@ -173,7 +173,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
   def __init__(
     self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim,
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
-    att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state,
+    att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state, fast_rec_full,
     scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
     fast_rec=False, pretrain=True, with_silence=False, sep_sil_model=False, sil_idx=None, sos_idx=0,
     train_data_opts=None, dev_data_opts=None, devtrain_data_opts=None, search_data_opts=None, **kwargs):
@@ -197,7 +197,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       enc_val_dec_factor=1, target_num_labels=self.target_num_labels, target=self.target, task=self.task,
       targetb_num_labels=self.targetb_num_labels, scheduled_sampling=scheduled_sampling, lstm_dim=lstm_dim, l2=0.0001,
       beam_size=self.beam_size, length_model_inputs=length_model_inputs, prev_att_in_state=prev_att_in_state,
-      targetb_blank_idx=self.targetb_blank_idx, use_att=use_attention,
+      targetb_blank_idx=self.targetb_blank_idx, use_att=use_attention, fast_rec_full=fast_rec_full,
       label_smoothing=label_smoothing, emit_extra_loss=emit_extra_loss, emit_loss_scale=1.0,
       efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size, fast_rec=fast_rec,
       with_silence=with_silence, sep_sil_model=sep_sil_model, sil_idx=sil_idx, sos_idx=sos_idx)
