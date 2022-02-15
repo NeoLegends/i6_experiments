@@ -9,45 +9,90 @@ import xml.etree.ElementTree as ET
 from xml import etree
 import matplotlib.pyplot as plt
 import numpy as np
+import tensorflow as tf
 
 # dataset = None
 
 
-def create_augmented_alignment():
+def hdf_dataset_init(out_dim, file_name):
+  """
+  :param str file_name: filename of hdf dataset file in the filesystem
+  :rtype: hdf_dataset_mod.HDFDatasetWriter
+  """
+  import returnn.datasets.hdf as hdf_dataset_mod
+  return hdf_dataset_mod.SimpleHDFWriter(
+    filename=file_name, dim=out_dim, ndim=1)
+
+
+def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset):
   dataset.init_seq_order()
   seq_idx = 0
-  seg_total_len = 0
   sil_idx = 0
-  num_segs = 0
-  num_plotted = 0
-  # phon_to_idx = {v: k for k, v in phoneme_vocab.items()}
+  special_tokens = ("[NOISE]", "[VOCALIZEDNOISE]", "[LAUGHTER]")
+  skipped_pairs = []
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx < float("inf"):
+    skip_seq = False
     if seq_idx % 1000 == 0:
       complete_frac = dataset.get_complete_frac(seq_idx)
       print("Progress: %.02f" % (complete_frac * 100))
     dataset.load_seqs(seq_idx, seq_idx + 1)
-    orth = dataset.get_data(seq_idx, "data")
+
+    # load alignments (idx sequences)
     bpe_align = dataset.get_data(seq_idx, "bpe_align")
     phoneme_align = dataset.get_data(seq_idx, "phoneme_align")
-    # if len(orth) > 5:
-    words = [word_vocab[idx] for idx in orth]
-    # print(words)
-    bpes = [bpe_vocab[idx] for idx in bpe_align]
-    # print(bpes)
-    phonemes = [phoneme_vocab[idx] for idx in phoneme_align]
-    # print(phoneme_align)
-    print([word_vocab[idx] for idx in orth])
-    word_phon_map = [[element for element in lexicon.iter("lemma") if element.find("orth").text == word_vocab[idx]][0].find("phon").text for idx in orth if word_vocab[idx] != "<unk>"]
-    print(word_phon_map)
-    # print(word_phon_map)
-
-    rem_num = len(phoneme_align) % 6
-    upscaled_bpe_align = [i for j in bpe_align[:-1] for i in ([bpe_blank_idx] * 5) + [j]]
+    # bpe and phoneme string sequence
+    bpes = np.array([bpe_vocab[idx] for idx in bpe_align])
+    phonemes = np.array([phoneme_vocab[idx] for idx in phoneme_align])
+    # string seqs without blanks
+    bpes_non_blank = bpes[bpe_align != bpe_blank_idx]
+    phonemes_non_blank = phonemes[phoneme_align != phoneme_blank_idx]
+    # upscale bpe sequence to match phoneme align length
+    rem_num = len(phoneme_align) % bpe_upsampling_factor
+    upscaled_bpe_align = [i for j in bpe_align[:-1] for i in ([bpe_blank_idx] * (bpe_upsampling_factor-1)) + [j]]
     if rem_num == 0:
-      upscaled_bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * 5) + [j]]
+      upscaled_bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * (bpe_upsampling_factor-1)) + [j]]
     else:
       upscaled_bpe_align += [i for j in bpe_align[-1:] for i in ([bpe_blank_idx] * (rem_num - 1)) + [j]]
+    # get word sequence by merging non-blank bpe strings
+    words = []
+    cur = ""
+    for subword in bpes_non_blank:
+      cur += subword
+      if subword.endswith("@@"):
+        cur = cur[:-2]
+      else:
+        words.append(cur)
+        cur = ""
 
+    # get a unique mapping from words to phonemes
+    # if a unique mapping is not possible, store and skip the sequence
+    word_phon_map = []
+    rem_phons = " ".join(phonemes_non_blank[phonemes_non_blank != "[SILENCE]"])
+    for word in words:
+      if word in special_tokens:
+        word_phon_map.append(word)
+        rem_phons = rem_phons[len(word + " "):]
+      else:
+        # find the lemma node in the lexicon which has the current word as orthography
+        lemma = [element for element in lexicon.iter("lemma") if element.find("orth").text == word][0]
+        phon_cands = [phon.text for phon in lemma.findall("phon")]
+        matching_cands = []
+        for cand in phon_cands:
+          if rem_phons.startswith(cand):
+            matching_cands.append(cand)
+        if len(matching_cands) != 1:
+          skip_seq = True
+          break
+        word_phon_map.append(matching_cands[0])
+        rem_phons = rem_phons[len(matching_cands[0] + " "):]
+    if skip_seq:
+      seq_idx += 1
+      skipped_pairs.append((bpes_non_blank, phonemes_non_blank))
+      continue
+
+    # get mapping from word sequence to bpe tokens
+    # additionally, store the fraction of a subword of the merged word
+    # e.g.: for [cat@@, s], store the fraction that "cat@@" and "s" inhabit in the total alignment of "cats"
     word_bpe_map = []
     mapping = []
     prev_bound = 0
@@ -57,7 +102,6 @@ def create_augmented_alignment():
         prev_bound += seg_size
         if prev_bound == seg_size:
           seg_size += 1
-          # prev_bound += seg_size - 1
         if bpe_vocab[bpe_idx].endswith("@@"):
           mapping.append([bpe_idx, seg_size])
         else:
@@ -67,9 +111,7 @@ def create_augmented_alignment():
           word_bpe_map.append(mapping)
           mapping = []
 
-    # print("UPSCALED BPE ALIGN: ", upscaled_bpe_align)
-    # print("WORD BPE MAP: ", word_bpe_map)
-
+    # determine the word boundaries in the phoneme alignment
     word_bounds = []
     sil_bounds = []
     new_bpe_align = []
@@ -79,12 +121,13 @@ def create_augmented_alignment():
       # print(mapping)
       word_phons = mapping.split(" ")
       # word_phons = [phon_to_idx[phon] for phon in word_phons]
-      last_phon_in_word = word_phons[-1] + "{#+#}@f.0"
+      last_phon_in_word = word_phons[-1]
+      if last_phon_in_word not in special_tokens:
+        last_phon_in_word += "{#+#}@f.0"
+      else:
+        last_phon_in_word += "{#+#}.0"
       last_phon_in_word = phon_to_idx[last_phon_in_word]
       # go through the phoneme align, starting from the word boundary of the previous word
-      # print("START ALIGN IDX: ", align_idx)
-      # print("LAST PHON IDX: ", last_phon_in_word)
-      # print("REM ALIGN: ", phoneme_align[align_idx:])
       for i, phon_idx in enumerate(phoneme_align[align_idx:]):
         if phon_idx == sil_idx:
           word_bounds.append(align_idx + i)
@@ -94,13 +137,16 @@ def create_augmented_alignment():
           word_bounds.append(align_idx + i)
           align_idx = align_idx + i + 1
           break
+    if len(phoneme_align[align_idx:]) > 0:
+      assert phoneme_align[-1] == sil_idx
+      sil_bounds.append(len(phoneme_align)-1)
+      word_bounds.append(len(phoneme_align) - 1)
 
-    # print("WORD BOUNDS: ", word_bounds)
-    # print("SIL BOUNDS: ", sil_bounds)
-
-    bpe_sil_align = [bpe_blank_idx] * len(phoneme_align)
+    new_bpe_blank_idx = bpe_blank_idx + 1
+    bpe_sil_align = [new_bpe_blank_idx] * len(phoneme_align)
     prev_bound = -1
     bpe_idx = 0
+    print(seq_idx)
     for bound in word_bounds:
       if bound in sil_bounds:
         bpe_sil_align[bound] = sil_idx
@@ -110,24 +156,41 @@ def create_augmented_alignment():
         if prev_bound == 0:
           size += 1
         bpe_map = word_bpe_map[bpe_idx]
-        # print("BPE MAP: ", bpe_map)
-        # print("BOUND: ", bound)
-        for bpe, frac in bpe_map:
-          # print("PREV BOUND: ", prev_bound)
-          bpe_sil_align[prev_bound + int(round(size * frac, 0))] = bpe
-          prev_bound += int(round(size * frac, 0))
+        for i, (bpe, frac) in enumerate(bpe_map):
+          if i != len(bpe_map) - 1:
+            offset = max(int(round(size * frac, 0)), 1)
+            bpe_sil_align[prev_bound + offset] = bpe
+            prev_bound += offset
+          else:
+            bpe_sil_align[bound] = bpe
         bpe_idx += 1
         prev_bound = bound
 
-    # print("BPE SIL ALIGN: ", bpe_sil_align)
+    # plot some random examples
+    if np.random.rand(1) < 0.01:
+      plot_aligns(upscaled_bpe_align, phoneme_align, bpe_sil_align, seq_idx)
 
-    # plot_aligns(upscaled_bpe_align, phoneme_align, bpe_sil_align, seq_idx)
-    # num_plotted += 1
+    # dump new alignment into hdf file
+    seq_len = len(bpe_sil_align)
+    tag = dataset.get_tag(seq_idx)
+    new_data = tf.constant(np.expand_dims(bpe_sil_align, axis=0), dtype="int32")
+    extra = {}
+    seq_lens = {0: tf.constant([seq_len]).numpy()}
+    ndim_without_features = 1  # - (0 if data_obj.sparse or data_obj.feature_dim_axis is None else 1)
+    for dim in range(ndim_without_features):
+      if dim not in seq_lens:
+        seq_lens[dim] = np.array([new_data.shape[dim + 1]] * 1, dtype="int32")
+    batch_seq_sizes = np.zeros((1, len(seq_lens)), dtype="int32")
+    for i, (axis, size) in enumerate(sorted(seq_lens.items())):
+      batch_seq_sizes[:, i] = size
+    extra["seq_sizes"] = batch_seq_sizes
 
-    # if num_plotted > 0:
-    #   break
+    hdf_dataset.insert_batch(new_data, seq_len=seq_lens, seq_tag=[tag], extra=extra)
 
     seq_idx += 1
+
+  print("Skipped Sequence Pairs:")
+  print("\n".join([str(pair) for pair in skipped_pairs]))
 
 
 def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
@@ -145,7 +208,6 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
      np.array([[0 if i == phoneme_blank_idx else 1 for i in phoneme_align]])],
     axis=0
   )
-  print(bpe_align)
   bpe_align = np.array(bpe_align)
   bpe_silence_align = np.array(bpe_silence_align)
   phoneme_align = np.array(phoneme_align)
@@ -154,8 +216,8 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
   bpe_labels = bpe_align[bpe_align != bpe_blank_idx]
   bpe_labels = [bpe_vocab[i] for i in bpe_labels]
 
-  bpe_silence_ticks = np.where(bpe_silence_align != bpe_blank_idx)[0]
-  bpe_silence_labels = bpe_silence_align[bpe_silence_align != bpe_blank_idx]
+  bpe_silence_ticks = np.where(bpe_silence_align != bpe_blank_idx + 1)[0]
+  bpe_silence_labels = bpe_silence_align[bpe_silence_align != bpe_blank_idx + 1]
   bpe_silence_labels = [bpe_silence_vocab[i] for i in bpe_silence_labels]
 
   phoneme_ticks = np.where(phoneme_align != phoneme_blank_idx)[0]
@@ -218,7 +280,9 @@ def plot_aligns(bpe_align, phoneme_align, bpe_silence_align, seq_idx):
   plt.close()
 
 
-def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexicon_file, bpe_blank, phoneme_blank):
+def init(
+  bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexicon_file, bpe_blank, phoneme_blank,
+  segment_file, out_vocab):
   global config
   global dataset
   global word_vocab
@@ -235,10 +299,22 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
 
   with open(bpe_vocab_file, "r") as f:
     bpe_vocab = ast.literal_eval(f.read())
+    bpe_silence_vocab = bpe_vocab.copy()
+    voc_noise_idx = bpe_vocab.pop("[VOCALIZED-NOISE]")
+    bpe_vocab["[VOCALIZEDNOISE]"] = voc_noise_idx
     bpe_vocab = {int(v): k for k, v in bpe_vocab.items()}
     bpe_vocab[bpe_blank] = "<b>"
-  bpe_silence_vocab = bpe_vocab.copy()
-  bpe_silence_vocab[bpe_blank + 1] = "[SILENCE]"
+
+  bpe_silence_vocab["<s>"] = bpe_blank
+  bpe_silence_vocab["</s>"] = bpe_blank
+  bpe_silence_vocab["[SILENCE]"] = 0
+  with open(out_vocab, "w+") as f:
+    json.dump(bpe_silence_vocab, f)
+  bpe_silence_vocab["<b>"] = bpe_blank + 1
+  voc_noise_idx = bpe_silence_vocab.pop("[VOCALIZED-NOISE]")
+  bpe_silence_vocab["[VOCALIZEDNOISE]"] = voc_noise_idx
+  bpe_silence_vocab = {int(v): k for k, v in bpe_silence_vocab.items()}
+
   with open(phoneme_vocab_file, "r") as f:
     phon_to_idx = ast.literal_eval(f.read())
     phon_to_idx = {k: int(v) for k, v in phon_to_idx.items()}
@@ -253,7 +329,6 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
     # xml_parser = ET.XMLParser(encoding="iso-8859-5")
     lexicon = ET.fromstring(f.read())
 
-
   rnn.init_better_exchook()
   rnn.init_thread_join_hack()
   rnn.init_config(config_filename=None, default_config={"cache_size": 0})
@@ -266,28 +341,18 @@ def init(bpe_hdf, phoneme_hdf, bpe_vocab_file, phoneme_vocab_file, phoneme_lexic
   bpe_dataset_dict = {
     "class": "HDFDataset", "files": [bpe_hdf], "use_cache_manager": True, 'estimated_num_seqs': 3000,
     'partition_epoch': 1,
-    'seq_list_filter_file': '/u/schmitt/experiments/transducer/config/dependencies/seg_cv_head3000'}
+    'seq_list_filter_file': segment_file}
   phoneme_dataset_dict = {
     "class": "HDFDataset", "files": [phoneme_hdf], "use_cache_manager": True, 'estimated_num_seqs': 3000,
     'partition_epoch': 1,
-    'seq_list_filter_file': '/u/schmitt/experiments/transducer/config/dependencies/seg_cv_head3000'}
-  sprint_dataset_dict = {
-      'class': 'ExternSprintDataset', 'input_stddev': 3.0,
-      'sprintConfigStr': ['--config=/u/schmitt/experiments/transducer/config/rasr-configs/dev_data.sprint.config'],
-      'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding',
-      "orth_vocab": {
-        "vocab_file": "/work/asr3/zeyer/schmitt/sisyphus_work_dirs/swb1/dependencies/words/vocab_json",
-        "unknown_label": "<unk>"},
-      'suppress_load_seqs_print': True}
-
-
+    'seq_list_filter_file': segment_file}
 
   dataset_dict = {
     'class': 'MetaDataset',
     'data_map':
-      {'bpe_align': ('bpe_align', 'data'), 'phoneme_align': ('phoneme_align', 'data'), 'data': ('sprint', 'orth_classes')},
+      {'bpe_align': ('bpe_align', 'data'), 'phoneme_align': ('phoneme_align', 'data')},
     'datasets': {
-      'bpe_align': bpe_dataset_dict, "phoneme_align": phoneme_dataset_dict, 'sprint': sprint_dataset_dict},
+      'bpe_align': bpe_dataset_dict, "phoneme_align": phoneme_dataset_dict},
     'seq_order_control_dataset': 'bpe_align'}
 
   dataset = rnn.init_dataset(dataset_dict)
@@ -306,20 +371,28 @@ def main():
   arg_parser.add_argument("--bpe_vocab", help="mapping from bpe idx to label", type=str)
   arg_parser.add_argument("--phoneme_vocab", help="mapping from phoneme idx to label", type=str)
   arg_parser.add_argument("--phoneme_lexicon", help="mapping from words to phonemes", type=str)
-  arg_parser.add_argument("--corpus", help="path to the corpus file", type=str)
-  arg_parser.add_argument("--out_path", help="output path for augmented alignment", type=str)
+  arg_parser.add_argument("--segment_file", help="segment whitelist", type=str)
+  arg_parser.add_argument(
+    "--bpe_upsampling_factor", help="factor to get bpe alignment to same length as phoneme alignment", type=int)
+  arg_parser.add_argument("--out_align", help="output path for augmented alignment", type=str)
+  arg_parser.add_argument("--out_vocab", help="output path for augmented vocab", type=str)
   arg_parser.add_argument("--returnn_root", type=str)
   args = arg_parser.parse_args()
   sys.path.insert(0, args.returnn_root)
   global rnn
   import returnn.__main__ as rnn
+  import returnn.tf.compat as tf_compat
+  tf_compat.v1.enable_eager_execution()
 
   init(
     args.bpe_align_hdf, args.phoneme_align_hdf, args.bpe_vocab, args.phoneme_vocab, args.phoneme_lexicon,
-    args.bpe_blank_idx, args.phoneme_blank_idx)
+    args.bpe_blank_idx, args.phoneme_blank_idx, args.segment_file, args.out_vocab)
+
+  hdf_dataset = hdf_dataset_init(out_dim=dataset.get_data_dim("bpe_align") + 1, file_name=args.out_align)
 
   try:
-    create_augmented_alignment()
+    create_augmented_alignment(args.bpe_upsampling_factor, hdf_dataset)
+    hdf_dataset.close()
   except KeyboardInterrupt:
     print("KeyboardInterrupt")
     sys.exit(1)
