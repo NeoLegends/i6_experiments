@@ -7,29 +7,30 @@ The input is any other dataset (:class:`Dataset`).
 
 from __future__ import print_function
 
+import json
 import sys
 import argparse
 import numpy as np
 import tensorflow as tf
 
 
-def hdf_dataset_init(dataset, file_name):
+def hdf_dataset_init(file_name, dim):
   """
   :param str file_name: filename of hdf dataset file in the filesystem
   :rtype: hdf_dataset_mod.HDFDatasetWriter
   """
   import returnn.datasets.hdf as hdf_dataset_mod
   return hdf_dataset_mod.SimpleHDFWriter(
-    filename=file_name, dim=dataset.get_data_dim("classes") + 2, ndim=1)
+    filename=file_name, dim=dim, ndim=1)
 
 
-def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
+def hdf_dump_from_dataset(dataset, phon_to_id, id_to_multiphone, end_state_ids, mid_state_ids, beg_state_ids, hdf_dataset, parser_args):
   """
   :param Dataset dataset: could be any dataset implemented as child of Dataset
   :param hdf_dataset_mod.HDFDatasetWriter hdf_dataset:
   :param parser_args: argparse object from main()
   """
-  seq_idx = parser_args.start_seq
+  seq_idx = 0
   end_idx = parser_args.end_seq
   sil_use_blanks = parser_args.silence_use_blanks
   sil_idx = parser_args.silence_idx
@@ -39,12 +40,75 @@ def hdf_dump_from_dataset(dataset, hdf_dataset, parser_args):
   target_dim = dataset.get_data_dim("classes")
   blank_idx = target_dim + 1  # idx target_dim is reserved for SOS token
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx <= end_idx:
+
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "classes")
-    # replace every frame label with blank except the last frame of each segment, which is the segment label
-    # if sil_use_blanks is False, all frames of silence segments are labeled as silence, without blank labels
-    blank_mask = [True if i == j and (sil_use_blanks or i != sil_idx) else False for i, j in zip(data[:-1], data[1:])] + [False]
+    # print(dataset.get_tag(seq_idx))
+    # print("SEQ IDX: ", seq_idx)
+    # print("DATA: ", data)
+
+    ### first, do a sanity check if the alignment from RASR complies with our expectation
+    ### we expect an alignment, where, for every phoneme except silence, there are three different idxs (three states)
+    ### silence only has one state
+
+    # init state with 0 and prev idx with first idx in data
+    prev_state = 0
+    prev_idx = data[0]
+    prev_phon = id_to_multiphone[prev_idx]
+    # the first idx needs to be a beginning state
+    assert prev_idx in beg_state_ids
+    # go through the alignment, starting from the second idx
+    for idx in data[1:]:
+      # if prev phoneme was silence, the current idx needs to be silence or a beginning state
+      if prev_phon == "[SILENCE]":
+        assert idx in beg_state_ids
+        prev_state = 0
+        if idx != prev_idx:
+          prev_phon = id_to_multiphone[idx]
+      # if prev state was a beginning state, this idx needs to be the same or a mid state
+      elif prev_state == 0:
+        if idx in mid_state_ids:
+          # even tho the state changed, this needs to be the same phoneme
+          assert prev_phon == id_to_multiphone[idx]
+          prev_state = 1
+        else:
+          assert idx == prev_idx
+      # this is analagous to the first case
+      elif prev_state == 1:
+        if idx in end_state_ids:
+          assert prev_phon == id_to_multiphone[idx]
+          prev_state = 2
+        else:
+          assert idx == prev_idx
+      # otherwise, the prev state was an end state
+      else:
+        # if this is a beginning state, this means we are at a new phoneme
+        if idx in beg_state_ids:
+          prev_state = 0
+          prev_phon = id_to_multiphone[idx]
+        # otherwise, this has to be the same idx as before and an end id
+        else:
+          assert idx == prev_idx and idx in end_state_ids
+
+      prev_idx = idx
+
+    assert prev_idx in end_state_ids or prev_phon == "[SILENCE]"
+    assert prev_phon == id_to_multiphone[prev_idx] or prev_phon == "[SILENCE]"
+
+    print("DATA: ", data)
+
+    blank_mask = [True if i == j else False for i, j in zip(data[:-1], data[1:])] + [False]
+    # sil_mask = [True if id_to_multiphone[idx] == "[SILENCE]" else False for idx in data]
+    # sil_end_mask = [False if i == j or i is False else True for i, j in zip(sil_mask[:-1], sil_mask[1:])] + [sil_mask[-1]]
     data[blank_mask] = blank_idx
+    blank_mask = [False if idx in end_state_ids or id_to_multiphone[idx] == "[SILENCE]" else True for idx in data]
+    data[blank_mask] = blank_idx
+    data = np.array([phon_to_id[id_to_multiphone[idx]] if idx != blank_idx else blank_idx for idx in data])
+    # data[sil_end_mask] = phon_to_id["[SILENCE]"]
+
+    print("NEW DATA: ", data)
+    print("\n")
+
     seq_len = dataset.get_seq_length(seq_idx)["classes"]
     tag = dataset.get_tag(seq_idx)
 
@@ -72,7 +136,7 @@ def hdf_close(hdf_dataset):
   hdf_dataset.close()
 
 
-def init(rasr_config_path, time_red, data_key):
+def init(rasr_config_path, time_red, segment_file):
   """
   :param str config_filename: global config for CRNN
   :param list[str] cmd_line_opts: options for init_config method
@@ -94,8 +158,8 @@ def init(rasr_config_path, time_red, data_key):
     "--*.LOGFILE=nn-trainer.train.log",
     "--*.TASK=1", "--*.corpus.segment-order-shuffle=true",
     "--*.reduce-alignment-factor=%d" % time_red, "--*.corpus.segment-order-shuffle=true",
-    "--*.segment-order-sort-by-time-length=true",
-    "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data_key, -1),
+    "--*.peaky-alignment=no",
+    "--*.corpus.segments.file=%s" % segment_file
   ]
 
   dataset_dict = {
@@ -103,11 +167,78 @@ def init(rasr_config_path, time_red, data_key):
     "reduce_target_factor": time_red,
     'sprintConfigStr': sprint_args,
     'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding',
-    "partition_epoch": epoch_split,
-    "estimated_num_seqs": (estimated_num_seqs[data_key] // epoch_split) if data_key in estimated_num_seqs else None, }
+    # 'sprintTrainerExecPath': '/u/schmitt/src/rasr-dev/arch/linux-x86_64-standard/nn-trainer.linux-x86_64-standard',
+    "partition_epoch": epoch_split}
   dataset = rnn.datasets.init_dataset(dataset_dict)
   print("Source dataset:", dataset.len_info(), file=log.v3)
-  return dataset
+
+  id_to_multiphone = {}
+  end_state_ids = []
+  mid_state_ids = []
+  beg_state_ids = []
+  phon_to_id = {}
+  phon_vocab_w_ctx = {}
+  print("BEFORE OPEN FILE")
+  with open("/work/asr3/zeyer/schmitt/sisyphus_work_dirs/swb1/dependencies/tuske-phoneme-align/state-tying", "r") as state_tying_file:
+    relevant_lines = []
+    for i, line in enumerate(state_tying_file):
+      if line.split("{")[1].startswith("#+#"):
+        relevant_lines.append(line)
+
+  for line in relevant_lines:
+    allophone, id = line.split()
+    id = int(id)
+    monophone, ctx_state = allophone.split("{")
+    ctx, state = ctx_state.split("}", maxsplit=1)
+
+    if state.endswith(".2") and id not in end_state_ids:
+      end_state_ids.append(id)
+    elif state.endswith(".1") and id not in mid_state_ids:
+      mid_state_ids.append(id)
+    elif state.endswith(".0") and id not in beg_state_ids:
+      beg_state_ids.append(id)
+
+    monophone_w_ctx = monophone + "{" + ctx + "}"
+    if state.startswith("@f") and monophone not in ["[SILENCE]", "[NOISE]", "[VOCALIZEDNOISE]", "[LAUGHTER]"]:
+      monophone_w_ctx += "@f"
+      monophone += "@f"
+    monophone_w_ctx += ".0"
+
+    if monophone not in phon_to_id:
+      new_id = len(phon_to_id)
+      phon_to_id[monophone] = new_id
+      phon_vocab_w_ctx[monophone_w_ctx] = new_id
+
+    if id not in id_to_multiphone:
+      id_to_multiphone[id] = monophone
+
+
+  id_to_phon = {v: k for k, v in phon_to_id.items()}
+  phon = id_to_phon[0]
+  if phon != "[SILENCE]":
+    sil_id = phon_to_id["[SILENCE]"]
+    phon_to_id["[SILENCE]"] = 0
+    phon_to_id[phon] = sil_id
+    id_to_phon[sil_id] = phon
+    id_to_phon[0] = "[SILENCE]"
+
+  with open("phoneme_vocab", "w+") as f:
+    json.dump(phon_vocab_w_ctx, f)
+
+
+
+  print("VOCAB: ", phon_to_id)
+  print("MULTI PHON VOCAB: ", id_to_multiphone)
+  print("LEN MULTI PHON VOCAB: ", len(id_to_multiphone))
+  print("END STATES: ", end_state_ids)
+  print("MID STATES: ", mid_state_ids)
+  print("BEG STATES: ", beg_state_ids)
+  print("LEN END STATES: ", len(end_state_ids))
+  print("VOCAB W CTX: ", phon_vocab_w_ctx)
+
+
+
+  return dataset, phon_to_id, id_to_multiphone, end_state_ids, mid_state_ids, beg_state_ids
 
 
 def main(argv):
@@ -123,7 +254,7 @@ def main(argv):
   parser.add_argument('--epoch', type=int, default=1, help="Optional start epoch for initialization")
   parser.add_argument('--time_red', type=int, default=1, help="Time-downsampling factor")
   parser.add_argument('--returnn_root', help="Returnn root to use for imports")
-  parser.add_argument('--data_key')
+  parser.add_argument('--segment_file')
   parser.add_argument(
     '--silence-use-blanks', help="If true, silence segments are stored with blanks", action="store_true")
   parser.add_argument('--silence-idx', help="Needs to be provided if silence-use-blanks is true", type=int, default=0)
@@ -137,9 +268,9 @@ def main(argv):
   import returnn.tf.compat as tf_compat
   tf_compat.v1.enable_eager_execution()
 
-  dataset = init(rasr_config_path=args.rasr_config, time_red=args.time_red, data_key=args.data_key)
-  hdf_dataset = hdf_dataset_init(dataset, args.hdf_filename)
-  hdf_dump_from_dataset(dataset, hdf_dataset, args)
+  dataset, phon_to_id, id_to_multiphone, end_state_ids, mid_state_ids, beg_state_ids = init(rasr_config_path=args.rasr_config, time_red=args.time_red, segment_file=args.segment_file)
+  hdf_dataset = hdf_dataset_init(args.hdf_filename, dim=90)
+  hdf_dump_from_dataset(dataset, phon_to_id, id_to_multiphone, end_state_ids, mid_state_ids, beg_state_ids, hdf_dataset, args)
   hdf_close(hdf_dataset)
 
   rnn_main.finalize()
