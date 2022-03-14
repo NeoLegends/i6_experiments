@@ -1,3 +1,5 @@
+from sisyphus.delayed_ops import DelayedFormat
+
 def cf(filename):
   """Cache manager"""
   import os
@@ -82,43 +84,22 @@ def get_dataset_dict(data):
 
   return d
 
-def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_cache, vocab, epoch_split=6):
-  from subprocess import check_output, CalledProcessError
 
+def get_dataset_dict_wo_alignment(data, rasr_config_path, rasr_nn_trainer_exe, vocab, epoch_split=6):
   assert data in {"train", "devtrain", "cv", "dev", "hub5e_01", "rt03s"}
   epoch_split = {
     "train": epoch_split}.get(data, 1)
-  corpus_name = {
-    "cv": "train", "devtrain": "train"}.get(data, data)  # train, dev, hub5e_01, rt03s
-
-  hdf_files = None
-  if alignment is not None:
-    assert data in {"train", "cv", "devtrain"}
-    hdf_files = [alignment]
-
-  if data in {"train", "cv", "devtrain"}:
-    segment_file = "/u/schmitt/experiments/transducer/config/dependencies/seg_%s" % {
-      "train": "train", "cv": "cv_head3000", "devtrain": "train_head3000"}[data]
 
   estimated_num_seqs = {
     "train": 227047, "cv": 3000, "devtrain": 3000}  # wc -l segment-file
 
-  def add_cf(file_path):
-    return "'`cf " + file_path + "`'"
-
-  args = ["--config=/u/schmitt/experiments/transducer/config/rasr-configs/extern_sprint_dataset.config",
-          "--*.corpus.file=" + corpus_file,
-          "--*.corpus.segments.file=" + segment_file if segment_file else "", "--*.log-channel.file=sprint-log",
-          "--*.feature-cache-path=" + add_cf(feature_cache) if check_output(["hostname"]).strip().decode("utf8") != "cluster-cn-211" else "--*.feature-cache-path=" + feature_cache,
-          "--*.window-size=1"]
-
-  if not hdf_files:
-    args += ["--*.corpus.segment-order-shuffle=true", "--*.segment-order-sort-by-time-length=true",
-             "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data, -1)]
+  args = [DelayedFormat("--config={}", rasr_config_path),
+          "--*.corpus.segment-order-shuffle=true", "--*.segment-order-sort-by-time-length=true",
+          "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data, -1)]
 
   d = {
     "class": "ExternSprintDataset",
-    "sprintTrainerExecPath": "/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding",
+    "sprintTrainerExecPath": rasr_nn_trainer_exe,
     "sprintConfigStr": args, "suppress_load_seqs_print": True,  # less verbose
     "input_stddev": 3.}
 
@@ -128,28 +109,44 @@ def get_dataset_dict_new(data, alignment, corpus_file, segment_file, feature_cac
     else:
       d["orth_vocab"] = vocab
 
-  partition_epochs_opts = {
-    "partition_epoch": epoch_split,
-    "estimated_num_seqs": (estimated_num_seqs[data] // epoch_split) if data in estimated_num_seqs else None, }
+  if data == "train":
+    partition_epochs_opts = {
+      "partition_epoch": epoch_split,
+      "estimated_num_seqs": (estimated_num_seqs[data] // epoch_split) if data in estimated_num_seqs else None, }
 
-  if hdf_files:
-    align_opts = {
-      "class": "HDFDataset", "files": hdf_files, "use_cache_manager": True,
-      "seq_list_filter_file": segment_file}  # otherwise not right selection
-    align_opts.update(partition_epochs_opts)  # this dataset will control the seq list
-    if data == "train":
-      align_opts["seq_ordering"] = "laplace:%i" % (estimated_num_seqs[data] // 1000)
-      align_opts["seq_order_seq_lens_file"] = "/u/zeyer/setups/switchboard/dataset/data/seq-lens.train.txt.gz"
-    d = {
-      "class": "MetaDataset", "datasets": {"sprint": d, "align": align_opts}, "data_map": {
-        "data": ("sprint", "data"), # target: ("sprint", target),
-        "alignment": ("align", "data"), # "align_score": ("align", "scores")
-      }, "seq_order_control_dataset": "align",  # it must support get_all_tags
-    }
-  else:
     d.update(partition_epochs_opts)
 
   return d
+
+
+def get_dataset_dict_w_alignment(data, rasr_config_path, rasr_nn_trainer_exe, segment_file, alignment, epoch_split=6):
+  hdf_files = [alignment]
+
+  d = {
+    "class": "ExternSprintDataset",
+    "sprintTrainerExecPath": rasr_nn_trainer_exe,
+    "sprintConfigStr": DelayedFormat("--config={}", rasr_config_path),
+    "suppress_load_seqs_print": True,  # less verbose
+    "input_stddev": 3.}
+
+  align_opts = {
+    "class": "HDFDataset", "files": hdf_files, "use_cache_manager": True,
+    "seq_list_filter_file": segment_file}  # otherwise not right selection
+  if data == "train":
+    estimated_num_seqs = 227047
+    align_opts["partition_epoch"] = epoch_split
+    align_opts["estimated_num_seqs"] = (estimated_num_seqs // epoch_split)
+    align_opts["seq_ordering"] = "laplace:%i" % (estimated_num_seqs // 1000)
+    align_opts["seq_order_seq_lens_file"] = "/u/zeyer/setups/switchboard/dataset/data/seq-lens.train.txt.gz"
+  d = {
+    "class": "MetaDataset", "datasets": {"sprint": d, "align": align_opts}, "data_map": {
+      "data": ("sprint", "data"),
+      "alignment": ("align", "data"),
+    }, "seq_order_control_dataset": "align",
+  }
+
+  return d
+
 
 def get_phoneme_dataset():
   dataset_dict = {
