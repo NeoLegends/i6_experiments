@@ -13,6 +13,7 @@ import sys
 import argparse
 import numpy as np
 import tensorflow as tf
+import math
 
 
 def hdf_dump_from_dataset(dataset, parser_args):
@@ -43,10 +44,10 @@ def hdf_dump_from_dataset(dataset, parser_args):
     data[blank_mask] = blank_idx
 
     data_no_blanks = data[data != blank_idx]
-    # data_no_sil_no_blanks = data_no_sil_no_blanks[data_no_sil_no_blanks != sil_idx]
+    # data_no_sil_no_blanks = data_no_blanks[data_no_blanks != sil_idx]
 
     for red in time_reds:
-      if len(data) / red < len(data_no_blanks):
+      if math.ceil(len(data) / red) < len(data_no_blanks):
         segs_to_skip[red].append(dataset.get_tag(seq_idx))
 
     seq_idx += 1
@@ -55,7 +56,7 @@ def hdf_dump_from_dataset(dataset, parser_args):
     json.dump(segs_to_skip, f)
 
 
-def init(rasr_config_path, data_key):
+def init(rasr_config_path, segment_file):
   """
   :param str config_filename: global config for CRNN
   :param list[str] cmd_line_opts: options for init_config method
@@ -78,7 +79,7 @@ def init(rasr_config_path, data_key):
     "--*.TASK=1", "--*.corpus.segment-order-shuffle=true",
     "--*.reduce-alignment-factor=%d" % 1, "--*.corpus.segment-order-shuffle=true",
     "--*.segment-order-sort-by-time-length=true",
-    "--*.segment-order-sort-by-time-length-chunk-size=%i" % {"train": epoch_split * 1000}.get(data_key, -1),
+    "--*.corpus.segments.file=%s" % segment_file
   ]
 
   dataset_dict = {
@@ -86,8 +87,7 @@ def init(rasr_config_path, data_key):
     "reduce_target_factor": 1,
     'sprintConfigStr': sprint_args,
     'sprintTrainerExecPath': '/u/zhou/rasr-dev/arch/linux-x86_64-standard-label_sync_decoding/nn-trainer.linux-x86_64-standard-label_sync_decoding',
-    "partition_epoch": epoch_split,
-    "estimated_num_seqs": (estimated_num_seqs[data_key] // epoch_split) if data_key in estimated_num_seqs else None, }
+    "partition_epoch": epoch_split}
   dataset = rnn.datasets.init_dataset(dataset_dict)
   print("Source dataset:", dataset.len_info(), file=log.v3)
 
@@ -106,7 +106,7 @@ def main(argv):
   parser.add_argument(
     '--time_reds', help="Time-downsampling factors to check alignments against", action="append", type=int)
   parser.add_argument('--returnn_root', help="Returnn root to use for imports")
-  parser.add_argument('--data_key')
+  parser.add_argument('--segment_file')
   parser.add_argument('--silence-idx', help="Needs to be provided if silence-use-blanks is true", type=int, default=0)
 
   args = parser.parse_args(argv[1:])
@@ -118,7 +118,7 @@ def main(argv):
   import returnn.tf.compat as tf_compat
   tf_compat.v1.enable_eager_execution()
 
-  dataset = init(rasr_config_path=args.rasr_config, data_key=args.data_key)
+  dataset = init(rasr_config_path=args.rasr_config, segment_file=args.segment_file)
   hdf_dump_from_dataset(dataset, args)
 
   rnn_main.finalize()
