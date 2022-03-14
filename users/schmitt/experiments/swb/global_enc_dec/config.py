@@ -15,9 +15,11 @@ class GlobalEncoderDecoderConfig():
           self, vocab, target_num_labels=1030,
           epoch_split=6, beam_size=12,
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
-          task="train", search_data_key=None, num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
-          train_data_opts=None, dev_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
-          time_red=(3, 2), pretrain=True):
+          task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
+          train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
+          time_red=(3, 2), pretrain=True, post_config={}):
+
+    self.post_config = post_config
 
     self.target_num_labels = target_num_labels
     self.task = task
@@ -26,8 +28,6 @@ class GlobalEncoderDecoderConfig():
     self.vocab = vocab
     self.rasr_config = rasr_config
     self.epoch_split = epoch_split
-    self.search_data_key = search_data_key
-    self.cleanup_old_models = {"keep_last_n": 1, "keep_best_n": 1, "keep": [150]}
     self.cache_size = "0"
     self.search_output_layer = "decision"
     self.debug_print_layer_output_template = True
@@ -77,17 +77,16 @@ class GlobalEncoderDecoderConfig():
       time_red=time_red, l2=0.0001, learning_rate=self.learning_rate)
 
     if self.task == "train":
-      assert train_data_opts and dev_data_opts and devtrain_data_opts
-      self.train = get_dataset_dict_new(vocab=self.vocab, epoch_split=self.epoch_split, **train_data_opts)
-      self.dev = get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **dev_data_opts)
-      self.eval_datasets = {'devtrain': get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **devtrain_data_opts)}
+      assert train_data_opts and cv_data_opts and devtrain_data_opts
+      self.train = get_dataset_dict_wo_alignment(**train_data_opts)
+      self.dev = get_dataset_dict_wo_alignment(**cv_data_opts)
+      self.eval_datasets = {'devtrain': get_dataset_dict_wo_alignment(**devtrain_data_opts)}
     else:
-      assert self.search_data_key and search_data_opts
-      self.search_data = get_dataset_dict_new(vocab=self.vocab, epoch_split=1, **search_data_opts)
+      assert search_data_opts
+      self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
 
     if pretrain:
       self.pretrain = {'copy_param_mode': 'subset', 'construction_algo': CodeWrapper("custom_construction_algo")}
-
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
@@ -97,4 +96,4 @@ class GlobalEncoderDecoderConfig():
     epilog = [epilog_item for k, epilog_list in self.__dict__.items() if k.endswith("_epilog") for epilog_item in
               epilog_list]
 
-    return ReturnnConfig(config=config_dict, python_prolog=prolog, python_epilog=epilog)
+    return ReturnnConfig(config=config_dict, post_config=self.post_config, python_prolog=prolog, python_epilog=epilog)

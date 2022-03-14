@@ -140,7 +140,7 @@ def custom_construction_algo(idx, net_dict):
     net_dict["#info"].update({
       "dim_frac": dim_frac, "num_lstm_layers": num_lstm_layers, "pretrain_idx": idx})
 
-    time_reduction = net_dict["#info"]["time_red"] if num_lstm_layers >= 3 else [np.prod(net_dict["#info"]["time_red"])]
+    time_reduction = net_dict["#info"]["time_red"] if num_lstm_layers >= 3 else [int(np.prod(net_dict["#info"]["time_red"]))]
 
     # Add encoder BLSTM stack
     src = "conv_merged"
