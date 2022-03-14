@@ -1,9 +1,10 @@
 from enum import Enum
 from recipe.i6_core.returnn.config import CodeWrapper
 import copy
+# from returnn.tf.util.data import Dim
 
 # global use_attention
-# global DimensionTag
+# global Dim
 # global att_seg_emb_size
 # global att_seg_use_emb
 # global att_win_size
@@ -53,19 +54,22 @@ def add_attention(
 
   # during training, the readout layer and the attention are masked to be only calculated in emit steps to save time and
   # memory
-  net_dict["output"]["unit"].update({
-    "att_masked": {
-      "class": "masked_computation", "mask": "is_label" if task == "train" else "const_true",
-      "from": "prev_non_blank_embed", "unit": {
-        "class": "subnetwork", "from": "data", "subnetwork": {
-          "output": {"class": "copy", "from": "att"}}}},
-    "att_unmask": {"class": "unmask", "from": "att_masked", "mask": "is_label"},
-    "att": {"class": "copy", "from": "att_unmask"},  # [B,L]
-  })
-  readout_level_dict = net_dict["output"]["unit"]["att_masked"]["unit"]["subnetwork"]
+  # net_dict["label_model"]["unit"].update({
+  #   "att_masked": {
+  #     "class": "masked_computation", "mask": "is_label" if task == "train" else "const_true",
+  #     "from": "prev_non_blank_embed", "unit": {
+  #       "class": "subnetwork", "from": "data", "subnetwork": {
+  #         "output": {"class": "copy", "from": "att"}}}},
+  #   "att_unmask": {"class": "unmask", "from": "att_masked", "mask": "is_label" if task == "train" else "const_true"},
+  #   "att": {"class": "copy", "from": "att_unmask"},  # [B,L]
+  # })
+  if task == "train":
+    readout_level_dict = net_dict["label_model"]["unit"]
+  else:
+    readout_level_dict = net_dict["output"]["unit"]
 
   att_heads_tag = CodeWrapper(
-    "DimensionTag(kind=DimensionTag.Types.Spatial, description='att_heads', dimension=%d)" % AttNumHeads)
+    "Dim(kind=Dim.Types.Spatial, description='att_heads', dimension=%d)" % AttNumHeads)
 
   def add_segment_information():
     # define segment as all frames since the last non-blank output
@@ -73,10 +77,11 @@ def add_attention(
     net_dict["output"]["unit"].update({
       "const1": {"class": "constant", "value": 1},
       "segment_starts": {  # (B,)
-        "class": "switch", "condition": "prev:output_is_not_blank", "true_from": ":i",
-        "false_from": "prev:segment_starts", "initial_output": 0},
+        "class": "switch", "condition": "prev:output_emit", "true_from": ":i",
+        "false_from": "prev:segment_starts", "initial_output": 0, "is_output_layer": True},
       "segment_lens0": {"class": "combine", "kind": "sub", "from": [":i", "segment_starts"]},
-      "segment_lens": {"class": "combine", "kind": "add", "from": ["segment_lens0", "const1"]},  # (B,)
+      "segment_lens": {
+        "class": "combine", "kind": "add", "from": ["segment_lens0", "const1"], "is_output_layer": True},  # (B,)
     })
 
   def add_segmental_embedding_vector():
@@ -129,7 +134,7 @@ def add_attention(
   def add_local_window():
     """Local window attention"""
     att_time_tag = CodeWrapper(
-      'DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t", dimension=%d)' % att_win_size)
+      'Dim(kind=Dim.Types.Spatial, description="att_t", dimension=%d)' % att_win_size)
     # In this case, the local window has a given fixed size
 
     # extract the window inside the encoder (more efficient than doing in inside the decoder)
@@ -226,7 +231,7 @@ def add_attention(
   #           "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2},
   #       })
   #
-  #   att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
+  #   att_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
   #
   #   add_global_without_weight_feedback()
 
@@ -327,14 +332,14 @@ def add_attention(
 
     """Segmental Attention: a segment is defined as current frame + all previous blank frames"""
     if att_area == "seg":
-      att_time_tag = CodeWrapper('DimensionTag(kind=DimensionTag.Types.Spatial, description="att_t")')
+      att_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
 
       # add the base attention mechanism here. The variations below define the segment boundaries (segment_starts and
       # segment_lens)
       readout_level_dict.update({
         "segments0": {  # [B,t_sliced,D]
-          "class": "slice_nd", "from": "base:base:encoder",
-          "start": "base:segment_starts", "size": "base:segment_lens"},
+          "class": "slice_nd", "from": "base:encoder",
+          "start": "segment_starts", "size": "segment_lens"},
         "segments": {
           "class": "reinterpret_data", "from": "segments0", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
         "att_ctx": {  # [B,D]
@@ -351,7 +356,7 @@ def add_attention(
 
   def add_attention_query():
     readout_level_dict["att_query"] = {  # (B,D)
-      "class": "linear", "from": "base:lm", "activation": None, "with_bias": False,
+      "class": "linear", "from": "lm", "activation": None, "with_bias": False,
       "n_out": EncKeyTotalDim, "is_output_layer": True if task == "train" else False}
 
   def add_energies():
