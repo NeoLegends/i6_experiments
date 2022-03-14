@@ -1,6 +1,9 @@
 import argparse
+import json
 import sys
 import numpy as np
+from collections import Counter
+import matplotlib.pyplot as plt
 
 def calc_segment_stats_with_sil(blank_idx, sil_idx):
 
@@ -17,6 +20,12 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
   num_final_sil_segs = 0
   num_seqs = 0
 
+  label_dependent_seg_lens = Counter()
+  label_dependent_num_segs = Counter()
+
+  map_non_sil_seg_len_to_count = Counter()
+  map_sil_seg_len_to_count = Counter()
+
   while dataset.is_less_than_num_seqs(seq_idx):
     num_seqs += 1
     # progress indication
@@ -26,34 +35,50 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
     dataset.load_seqs(seq_idx, seq_idx + 1)
     data = dataset.get_data(seq_idx, "data")
 
+    # find non-blanks and silence
     non_blank_idxs = np.where(data != blank_idx)[0]
     sil_idxs = np.where(data == sil_idx)[0]
+
+    non_blank_data = data[data != blank_idx]
+
+    # count number of segments and number of blank frames
     num_label_segs += len(non_blank_idxs) - len(sil_idxs)
     num_sil_segs += len(sil_idxs)
     num_blank_frames += len(data) - len(non_blank_idxs)
 
+    # if there are only blanks, we skip the seq as there are no segments
     if non_blank_idxs.size == 0:
       seq_idx += 1
       continue
     else:
       prev_idx = 0
       try:
+        # go through non blanks and count segment len
+        # differ between sil_beginning, sil_mid, sil_end and non-sil
         for i, idx in enumerate(non_blank_idxs):
           seg_len = idx - prev_idx
+          # first segment is always one too short because of prev_idx = 0
           if prev_idx == 0:
             seg_len += 1
+
+          label_dependent_seg_lens.update({non_blank_data[i]: seg_len})
+          label_dependent_num_segs.update([non_blank_data[i]])
 
           if idx in sil_idxs:
             if i == 0:
               init_sil_seg_len += seg_len
               num_init_sil_segs += 1
+              map_sil_seg_len_to_count.update([seg_len])
             elif i == len(non_blank_idxs) - 1:
               final_sil_seg_len += seg_len
               num_final_sil_segs += 1
+              map_sil_seg_len_to_count.update([seg_len])
             else:
               inter_sil_seg_len += seg_len
+              map_sil_seg_len_to_count.update([seg_len])
           else:
             label_seg_len += seg_len
+            map_non_sil_seg_len_to_count.update([seg_len])
 
           prev_idx = idx
       except IndexError:
@@ -68,6 +93,9 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
 
   mean_label_len = label_seg_len / num_label_segs
   mean_total_label_len = label_seg_len / num_seqs
+
+  label_dependent_mean_seg_lens = {int(idx): label_dependent_seg_lens[idx] / label_dependent_num_segs[idx] for idx in label_dependent_seg_lens }
+  label_dependent_mean_seg_lens.update({idx: mean_label_len for idx in range(blank_idx) if idx not in label_dependent_mean_seg_lens})
 
   mean_seq_len = (num_blank_frames + num_sil_segs + num_label_segs) / num_seqs
 
@@ -97,6 +125,35 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
     f.write("Sequence statistics: \n\n")
     f.write("\tMean length: %f \n" % mean_seq_len)
     f.write("\tNum sequences: %f \n" % num_seqs)
+
+  filename = "mean_non_sil_len"
+  with open(filename, "w+") as f:
+    f.write(str(float(mean_label_len)))
+
+  filename = "label_dep_mean_lens"
+  with open(filename, "w+") as f:
+    json.dump(label_dependent_mean_seg_lens, f)
+
+  # plot histograms of sil and non-sil segment lens
+  hist_data = [item for seg_len, count in map_non_sil_seg_len_to_count.items() for item in [seg_len] * count]
+  plt.hist(hist_data, bins=30, range=(0, 50))
+  ax = plt.gca()
+  quantiles = [np.quantile(hist_data, q) for q in [.90, .95, .99]]
+  for q in quantiles:
+    ax.axvline(q)
+  plt.savefig("non_sil_histogram.pdf")
+  plt.close()
+
+  hist_data = [item for seg_len, count in map_sil_seg_len_to_count.items() for item in [seg_len] * count]
+  plt.hist(hist_data, bins=40, range=(0, 100))
+  if len(hist_data) != 0:
+    ax = plt.gca()
+    quantiles = [np.quantile(hist_data, q) for q in [.90, .95, .99]]
+    for q in quantiles:
+      ax.axvline(q)
+  plt.savefig("sil_histogram.pdf")
+  plt.close()
+
 
 def init(hdf_file, seq_list_filter_file):
   rnn.init_better_exchook()
