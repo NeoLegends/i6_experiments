@@ -35,6 +35,147 @@ def parse_lexicon(lexicon):
   return result
 
 
+def get_word_phon_map(greedy, words, special_tokens, phonemes_non_blank, seq_idx, bpe_non_blank, tag):
+  skip_seq = False
+  pron_not_in_seq = False
+  if greedy:
+    # get a unique mapping from words to phonemes
+    # if a unique mapping is not possible, store and skip the sequence
+    word_phon_map = []
+    # start = time.time()
+    rem_phons = " ".join(phonemes_non_blank[phonemes_non_blank != "[SILENCE]"])
+    for word in words:
+      if word in special_tokens:
+        word_phon_map.append(word)
+        rem_phons = rem_phons[len(word + " "):]
+      else:
+        if word not in lexicon:
+          skip_seq = True
+          break
+        else:
+          phon_cands = lexicon[word]
+        # print("PHON CANDS: ", phon_cands)
+        matching_cands = []
+        for cand in phon_cands:
+          if rem_phons.startswith(cand):
+            matching_cands.append(cand)
+
+        if len(matching_cands) > 1:
+          # only keep the longest matching candidate
+          matching_cands = [sorted(matching_cands, key=len)[-1]]
+        if len(matching_cands) != 1:
+          assert len(matching_cands) == 0
+          skip_seq = True
+          break
+        word_phon_map.append(matching_cands[0])
+        rem_phons = rem_phons[len(matching_cands[0] + " "):]
+
+  else:
+    non_sil_phons = " ".join(phonemes_non_blank[phonemes_non_blank != "[SILENCE]"])
+    hyps = [[[], non_sil_phons]]
+    # print("current hyps: ", hyps)
+    # print("-----------------------")
+    for word in words:
+      new_hyps = []
+      for hyp in hyps:
+        # in this case, there is no pronunciation
+        # we just add a new hypotheses if the remaining phon seq starts with the special token
+        if word in special_tokens:
+          if hyp[1].startswith(word):
+            ext_seq = list(hyp[0])
+            ext_seq.append(word)
+            rem_phons = hyp[1][len(word + " "):]
+            new_hyps.append([ext_seq, rem_phons])
+        else:
+          if word not in lexicon:
+            print("WORD NOT IN LEXICON: ", word)
+            skip_seq = True
+            break
+          else:
+            phon_cands = lexicon[word]
+          # in this case, we possibly have multiple pronunciations
+          # for each one, we check whether it matches our remaining phon seq and, if yes, we add another hypothesis
+          # print("PHON CANDS: ", phon_cands)
+          i = 0
+          for cand in phon_cands:
+            # the remaining seq needs to start with the candidate and the candidate needs to "consume" whole phonemes
+            # of the alignment
+            if hyp[1].startswith(cand) and (hyp[1][len(cand):].startswith(" ") or len(hyp[1][len(cand):]) == 0):
+              # print("HYP: ", hyp)
+              # print("CAND: ", cand)
+              i += 1
+              ext_seq = list(hyp[0])
+              ext_seq.append(cand)
+              rem_phons = hyp[1][len(cand + " "):]
+              new_hyps.append([ext_seq, rem_phons])
+          # if i > 1:
+            # print("NOOOOOOOOOOOOOW: ", seq_idx)
+          # print(len(new_hyps))
+      if len(new_hyps) == 0:
+        print(bpe_non_blank)
+        print(hyps)
+        print(seq_idx)
+        print(tag)
+
+
+      hyps = list(new_hyps)
+      if len(hyps) == 0:
+        print("0 HYPS!!!!!")
+        break
+      # print("current hyps: ", hyps)
+      # print("-----------------------")
+
+      # skip_seq = True
+      # word_phon_map = []
+      # non_sil_phons = " ".join(phonemes_non_blank[phonemes_non_blank != "[SILENCE]"])
+      # for word in words:
+      #   if word not in special_tokens:
+      #     phon_cands = lexicon[word]
+      #     # print("CANDS: ", phon_cands)
+      #     # print("phonemes: ", non_sil_phons)
+      #     cand_in_seq = [cand in non_sil_phons for cand in phon_cands]
+      #     if not any(cand_in_seq):
+      #       pron_not_in_seq = True
+      #       # print("!!!!!!!!!!!!!!!!!!")
+      #       # print("CANNOT WORK")
+      #       # print("!!!!!!!!!!!!!!!!!!")
+      #       break
+    if len(hyps) == 0:
+      print(bpe_non_blank)
+      print(phonemes_non_blank)
+      print(seq_idx)
+      print(tag)
+      skip_seq = True
+      word_phon_map = []
+      # assert False
+    elif len(hyps) >= 1:
+      # print("MORE THAN 1 HYP!!!!")
+      # print(bpe_non_blank)
+      # print(hyps)
+      # print(seq_idx)
+      # print(tag)
+      hyps = [hyp for hyp in hyps if hyp[1] == ""]
+      # print(hyps)
+      # assert len(hyps) == 1
+      if len(hyps) != 1:
+        print("MORE THAN 1 HYP!!!!")
+        print(bpe_non_blank)
+        print(hyps)
+        print(seq_idx)
+        print(tag)
+
+      word_phon_map = hyps[0][0]
+    if len(words) != len(word_phon_map) and len(word_phon_map) > 0:
+      print(words)
+      print(word_phon_map)
+      raise ValueError
+
+  # assert False
+
+  return word_phon_map, skip_seq, pron_not_in_seq
+
+
+
 def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_file):
   dataset.init_seq_order()
   seq_idx = 0
@@ -49,7 +190,9 @@ def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_
   # bpe_sil_align_time = 0
 
   not_in_lex_count = 0
-  matching_cands_err_count = 0
+  matching_cands_0_count = 0
+  matching_cands_g1_count = 0
+  pron_not_in_phon_seq_count = 0
   match_bpe_to_phons_err_count = 0
 
   while dataset.is_less_than_num_seqs(seq_idx) and seq_idx < float("inf"):
@@ -89,56 +232,22 @@ def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_
       if subword.endswith("@@"):
         cur = cur[:-2]
       else:
-        words.append(cur)
+        words += [cur]
         cur = ""
     # bpe_merge_time += time.time() - start
 
-    # get a unique mapping from words to phonemes
-    # if a unique mapping is not possible, store and skip the sequence
-    word_phon_map = []
-    # start = time.time()
-    rem_phons = " ".join(phonemes_non_blank[phonemes_non_blank != "[SILENCE]"])
-    for word in words:
-      if word in special_tokens:
-        word_phon_map.append(word)
-        rem_phons = rem_phons[len(word + " "):]
-      else:
-        # find the lemma node in the lexicon which has the current word as orthography
-        # lemma = [element for element in lexicon.iter("lemma") if element.find("orth").text == word]
-        # lemma = lexicon.findall("""./lemma[orth="%s"]""" % word)
-        # print("WORD: ", word)
-        if word not in lexicon:
-          skip_seq = True
-          print("WORD NOT IN LEXICON: ", word)
-          print("BPE: ", bpes)
-          print("PHONEMES: ", phonemes)
-          print("TAG: ", tag)
-          print("\n\n")
-          not_in_lex_count += 1
-          break
-        else:
-          phon_cands = lexicon[word]
-        # print("PHON CANDS: ", phon_cands)
-        matching_cands = []
-        for cand in phon_cands:
-          if rem_phons.startswith(cand):
-            matching_cands.append(cand)
-        if len(matching_cands) != 1:
-          skip_seq = True
-          print("LEN MATCHING CANDS != 1: ", matching_cands)
-          print("PHON CANDS != 1: ", phon_cands)
-          print("BPE: ", bpes)
-          print("PHONEMES: ", rem_phons)
-          print("TAG: ", tag)
-          print("\n\n")
-          matching_cands_err_count += 1
-          break
-        word_phon_map.append(matching_cands[0])
-        rem_phons = rem_phons[len(matching_cands[0] + " "):]
+    # print("BPES: ", bpes_non_blank)
+    word_phon_map, skip_seq, pron_not_in_seq = get_word_phon_map(
+      greedy=False, words=words, special_tokens=special_tokens, phonemes_non_blank=phonemes_non_blank, seq_idx=seq_idx,
+      bpe_non_blank=bpes_non_blank, tag=dataset.get_tag(seq_idx))
+    if pron_not_in_seq:
+      pron_not_in_phon_seq_count += 1
     if skip_seq:
+      matching_cands_0_count += 1
       skipped_seqs.append(dataset.get_tag(seq_idx))
       seq_idx += 1
       continue
+    # print(word_phon_map)
 
     # words_to_phon_time += time.time() - start
     # start = time.time()
@@ -221,10 +330,15 @@ def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_
         if prev_bound == 0:
           size += 1
         bpe_map = word_bpe_map[bpe_idx]
+        # offsets = [max(int(round(size * frac, 0)), 1) for _, frac in bpe_map]
+        # if sum(offsets) > size:
+        #   offsets = [round(size / len(bpe_map))] * len(bpe_map)
+        #   assert all([offset >= 1 for offset in offsets])
         for i, (bpe, frac) in enumerate(bpe_map):
           if i != len(bpe_map) - 1:
             offset = max(int(round(size * frac, 0)), 1)
             if prev_bound + offset > len(bpe_sil_align) - 1:
+              print("\n\n")
               print("CANNOT MATCH BPE ALIGN TO PHON ALIGN")
               print("BPE: ", bpes)
               print("PHONEMES: ", phonemes)
@@ -260,8 +374,6 @@ def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_
       seq_idx += 1
       continue
 
-    # bpe_sil_align_time += time.time() - start
-
     # plot some random examples
     if np.random.rand(1) < 0.0001:
       plot_aligns(upscaled_bpe_align, phoneme_align, bpe_sil_align, seq_idx)
@@ -292,7 +404,9 @@ def create_augmented_alignment(bpe_upsampling_factor, hdf_dataset, skipped_seqs_
   # print(bpe_sil_align_time)
 
   print("NOT IN LEX COUNT: ", not_in_lex_count)
-  print("MATCHING CANDS ERR COUNT: ", matching_cands_err_count)
+  print("MATCHING CANDS 0 COUNT: ", matching_cands_0_count)
+  print("MATCHING CANDS GREATER 1 COUNT: ", matching_cands_g1_count)
+  print("PRON NOT IN SEQ COUNT: ", pron_not_in_phon_seq_count)
   print("MATCH BPE TO PHONS ERR COUNT: ", match_bpe_to_phons_err_count)
 
   with open(skipped_seqs_file, "w+") as f:
