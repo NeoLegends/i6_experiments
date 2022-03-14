@@ -2,6 +2,7 @@ import json
 
 from recipe.i6_core.returnn.config import CodeWrapper
 from sisyphus.delayed_ops import DelayedFunction
+# from returnn.tf.util.data import Dim
 
 def get_alignment_net_dict(pretrain_idx):
   """
@@ -288,13 +289,8 @@ def get_extended_net_dict(
       "use_channel_first": False},  # (T,10,32)
     "conv_merged": {"class": "merge_dims", "from": "conv1p", "axes": "static"},  # (T,320)
 
-    # Encoder LSTMs added below, resulting in "encoder0".
-
-    # "encoder": {"class": "postfix_in_time", "postfix": 0.0, "from": "encoder0"},
     "encoder": {"class": "copy", "from": "encoder0"},
-    "encoder_new": {
-      "class": "reinterpret_data", "from": "encoder",
-      "set_dim_tags": {"t": CodeWrapper('DimensionTag(kind=DimensionTag.Types.Time, description="new_t")')}}})
+  })
 
   if task == "train":
     net_dict.update({
@@ -304,14 +300,26 @@ def get_extended_net_dict(
         "set_sparse_dim": targetb_num_labels, "size_base": "encoder",  # for RNA...
       },
       "is_label": {"class": "compare", "from": "existing_alignment", "value": targetb_blank_idx, "kind": "not_equal"},
+      "segment_starts_masked": {
+        "class": "masked_computation", "from": "output/segment_starts", "mask": "is_label",
+        "register_as_extern_data": "segment_starts_masked",
+        "out_spatial_dim": CodeWrapper('Dim(kind=Dim.Types.Spatial, description="label-axis")'), "unit": {
+          "class": "copy", "from": "data"}},
+      "segment_lens_masked": {
+        "class": "masked_computation", "from": "output/segment_lens", "mask": "is_label",
+        "register_as_extern_data": "segment_lens_masked",
+        "out_spatial_dim": CodeWrapper('Dim(kind=Dim.Types.Spatial, description="label-axis")'),
+        "unit": {
+          "class": "copy", "from": "data"}},
       "label_ground_truth_masked0": {
-        "class": "masked_computation", "from": "existing_alignment", "mask": "is_label", "unit": {
+        "class": "masked_computation", "from": "existing_alignment", "mask": "is_label",
+        "unit": {
           "class": "copy", "from": "data"
         }
       },
       "label_ground_truth_masked": {
         "class": "reinterpret_data", "from": "label_ground_truth_masked0", "enforce_batch_major": True,
-        "register_as_extern_data": "label_ground_truth", "set_sparse_dim": target_num_labels},
+        "register_as_extern_data": "label_ground_truth", "set_sparse_dim": target_num_labels,},
       "const0": {"class": "constant", "value": 0, "with_batch_dim": True},
       "const1": {"class": "constant", "value": 1, "with_batch_dim": True},
       "emit_ground_truth0": {
@@ -320,28 +328,14 @@ def get_extended_net_dict(
       "emit_ground_truth": {
         "class": "reinterpret_data", "from": "emit_ground_truth0", "set_sparse": True, "set_sparse_dim": 2,
         "register_as_extern_data": "emit_ground_truth", "is_output_layer": True},
-      "print_targets": {"class": "print", "from": "existing_alignment", "is_output_layer": True},
-      "print_emit_targets": {"class": "print", "from": "emit_ground_truth", "is_output_layer": True},
-      # The layer name must be smaller than "t_target" such that this is created first.
-      # "1_targetb_base": {
-      #   "class": "copy", "from": "existing_alignment",
-      #   "register_as_extern_data": "targetb_base" if task == "train" else None},
 
       "labels_with_blank_ground_truth": {
-        "class": "eval", "from": "existing_alignment", "eval": "source(0)",
+        "class": "copy", "from": "existing_alignment",
         "register_as_extern_data": "targetb" if task == "train" else None},
 
       "ctc_out": {"class": "softmax", "from": "encoder", "with_bias": False, "n_out": targetb_num_labels},
       "ctc_out_scores": {
         "class": "eval", "from": ["ctc_out"], "eval": "safe_log(source(0))", },
-
-      # "_target_masked": {
-      #   "class": "masked_computation", "mask": "output/output_emit",
-      #   "from": "data:targetb" if scheduled_sampling else "output", "unit": {"class": "copy"}}, "3_target_masked": {
-      #   "class": "reinterpret_data", "from": "_target_masked", "set_sparse_dim": target_num_labels,
-      #   # we masked blank away
-      #   "enforce_batch_major": True,  # ctc not implemented otherwise...
-      #   "register_as_extern_data": "targetb_masked" if task == "train" else None},
 
       "ctc": {
         "class": "copy", "from": "ctc_out_scores", "loss": "ctc" if task == "train" else None,
@@ -349,16 +343,16 @@ def get_extended_net_dict(
           "beam_width": 1, "use_native": True, "output_in_log_space": True,
           "ctc_opts": {"logits_normalize": False}} if task == "train" else None}
     })
-  elif task == "search":
-    net_dict.update({
-      # for task "search" / search_output_layer
-      "output_wo_b0": {
-        "class": "masked_computation", "unit": {"class": "copy"}, "from": "output",
-        "mask": "output/output_is_non_sil_label" if (with_silence and task == "train") else "output/output_emit"},
-      "output_wo_b": {"class": "reinterpret_data", "from": "output_wo_b0", "set_sparse_dim": target_num_labels},
-      "decision": {
-        "class": "decide", "from": "output_wo_b", "loss": "edit_distance", "target": target, 'only_on_search': True}
-    })
+  # elif task == "search":
+  #   net_dict.update({
+  #     # for task "search" / search_output_layer
+  #     "output_wo_b0": {
+  #       "class": "masked_computation", "unit": {"class": "copy"}, "from": "output",
+  #       "mask": "output/output_is_non_sil_label" if (with_silence and task == "train") else "output/output_emit"},
+  #     "output_wo_b": {"class": "reinterpret_data", "from": "output_wo_b0", "set_sparse_dim": target_num_labels},
+  #     "decision": {
+  #       "class": "decide", "from": "output_wo_b", "loss": "edit_distance", "target": target, 'only_on_search': True}
+  #   })
 
   # Add encoder BLSTM stack.
   src = "conv_merged"
@@ -438,90 +432,121 @@ def get_extended_net_dict(
           "class": "rec", "unit": "nativelstm2", "from": length_model_inputs, "n_out": 128, "L2": l2,
           "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}}
 
-  def get_label_model(sep_sil_model):
+  def get_label_model(sep_sil_model, net_dict):
     """Readout (per segment): linear layer which is used as input for the label model"""
     # during training, we mask the readout layer to save time and memory
-    label_model_net = {}
-    if task != "train":
-      label_model_net["const_true"] = {"class": "constant", "value": True, "dtype": "bool", "with_batch_dim": True}
-    label_model_net.update({
-      "lm_masked": {
-        "class": "masked_computation", "mask": "prev:output_emit", "from": "prev_non_blank_embed", "unit": {
-          "class": "subnetwork", "from": "data", "subnetwork": {
-            "input_embed0": {
-              "class": "window", "from": "data", "window_size": 1, "window_left": 0,
-              "window_right": 0} if ctx_size == "inf" else {
-              "class": "window", "from": "data", "window_size": ctx_size, "window_right": 0,
-              "window_left": ctx_size - 1},
-            "input_embed": {
-              "class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
-            "lm": {
-              "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
-              "from": ["base:prev:att", "input_embed"] if prev_att_in_state else "input_embed"} if ctx_size == "inf" else {
-              "class": "linear", "activation": "tanh", "n_out": lstm_dim,
-              "from": ["base:prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
 
-            "output": {"class": "copy", "from": "lm"}}}},
-      "lm_unmask": {"class": "unmask", "from": "lm_masked", "mask": "prev:output_emit"},
-      "lm": {"class": "copy", "from": "lm_unmask"},  # [B,L]
+    rec_unit_dict = {
+      "prev_out_non_blank": {
+        "class": "reinterpret_data", "from": "prev:output", "set_sparse_dim": targetb_num_labels, "set_sparse": True},
+      "prev_non_blank_embed": {
+        "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
+      "readout_in": {
+        "class": "linear", "from": ["lm", "att"] if use_att else ["lm", "am"], "activation": None, "n_out": 1000},
+      "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
+      "label_log_prob0": {
+        "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
+        "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1},
+      "label_log_prob": {
+        "class": "combine", "kind": "add",
+        "from": ["label_log_prob0"] if not sep_sil_model else ["label_log_prob0", "non_sil_log_prob"]}}
 
-      "label_log_prob_masked": {
-        "class": "masked_computation", "mask": "is_label" if task == "train" else "const_true", "is_output_layer": True,
-        "from": "prev_non_blank_embed", "unit": {
-          "class": "subnetwork", "from": "data", "subnetwork": {
-            "readout_in": {
-              "class": "linear", "from": ["base:lm", "base:att"] if use_att else ["base:lm", "base:am", "data"],
-              "activation": None, "n_out": 1000},
-            "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"}}}},
-      "label_log_prob_unmask": {"class": "unmask", "from": "label_log_prob_masked", "mask": "is_label" if task == "train" else "const_true"},
-      "label_log_prob": {"class": "copy", "from": "label_log_prob_unmask"},
-    })
+    lm_dict = {
+      "input_embed0": {
+        "class": "window", "window_size": 1, "window_left": 0,
+        "window_right": 0} if ctx_size == "inf" else {
+        "class": "window", "window_size": ctx_size, "window_right": 0, "window_left": ctx_size - 1},
+      "input_embed": {
+        "class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
+      "lm": {
+        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
+        "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"} if ctx_size == "inf" else {
+        "class": "linear", "activation": "tanh", "n_out": lstm_dim,
+        "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
+    }
 
     if sep_sil_model:
-      label_model_net["label_log_prob_masked"]["unit"]["subnetwork"].update({
-        'segments0': {
-          'class': 'slice_nd', 'from': 'base:base:encoder_new', 'size': 'base:segment_lens',
-          'start': 'base:segment_starts'},
-        'segments': {
-          'class': 'reinterpret_data', 'from': 'segments0', 'set_dim_tags': {
-            'stag:sliced-time:segments': CodeWrapper(
-              "DimensionTag(kind=DimensionTag.Types.Spatial, description='seg_pool_t')")}},
+      rec_unit_dict.update({
         "pooled_segment": {
-          "class": "reduce", "mode": "mean", "axes": ["stag:seg_pool_t"], "from": "segments"},
-        "sil_model": {
-          "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2,
-          "from": ["pooled_segment"]},
+          "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "segments"}, "sil_model": {
+          "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": ["pooled_segment"]},
         "sil_log_prob0": {"class": "linear", "from": "sil_model", "activation": None, "n_out": 1},
         "sil_log_prob1": {"class": "activation", "from": "sil_log_prob0", "activation": "log_sigmoid"},
         "non_sil_log_prob": {"class": "eval", "from": "sil_log_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
         # prob of sil/non-sil is combined with emit prob
-        "sil_log_prob": {"class": "combine", "kind": "add", "from": ["sil_log_prob1", "emit_log_prob"]},
-      })
-
-    label_model_net["label_log_prob_masked"]["unit"]["subnetwork"].update({
-      "label_log_prob": {
-        "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
-        "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1},
-      "label_emit_log_prob": {
-        "class": "combine", "kind": "add",
-        "from": ["label_log_prob", "base:emit_log_prob"] if not sep_sil_model else [
-          "label_log_prob", "base:emit_log_prob", "non_sil_log_prob"]},
-      "output": {"class": "copy", "from": ["label_emit_log_prob"] if not sep_sil_model else [
-        "sil_log_prob", "label_emit_log_prob"]}
-    })
+        "sil_log_prob": {"class": "combine", "kind": "add", "from": ["sil_log_prob1", "emit_log_prob"]}, })
 
     if task == "train":
-      label_model_net["label_log_prob_masked"]["unit"]["subnetwork"].update({
+      rec_unit_dict.update({
+        "segment_lens": {
+          "class": "gather", "from": "base:data:segment_lens_masked", "position": ":i", "axis": "t"},
+        "segment_starts": {
+          "class": "gather", "from": "base:data:segment_starts_masked", "position": ":i", "axis": "t"},
         "label_prob": {
-          "class": "activation", "from": "label_emit_log_prob", "is_output_layer": True,
-          "activation": "exp", "target": "label_ground_truth",
+          "class": "activation",
+          "from": "label_log_prob" if not sep_sil_model else ["sil_log_prob", "label_log_prob"],
+          "is_output_layer": True, "activation": "exp", "target": "label_ground_truth",
           "loss": "ce" if task == "train" and not efficient_loss else None,
-          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}},
+        "output": {
+          'class': 'choice', 'target': "label_ground_truth", 'beam_size': beam_size, 'from': "data",
+          "initial_output": sos_idx, "cheating": "exclusive" if task == "train" else None},
+      })
+      lm_dict["input_embed0"]["from"] = "prev_non_blank_embed"
+      rec_unit_dict.update(lm_dict)
+      rec_unit_dict["input_embed0"]["name_scope"] = "lm_masked/lm_masked/input_embed0"
+      rec_unit_dict["input_embed"]["name_scope"] = "lm_masked/lm_masked/input_embed"
+      rec_unit_dict["lm"]["name_scope"] = "lm_masked/lm_masked/lm"
+      net_dict.update({
+        "label_model": {
+          "class": "rec", "from": "data:label_ground_truth", "include_eos": True, "back_prop": True,
+          "name_scope": "output/rec", "is_output_layer": True, "unit": {}}})
+      net_dict["label_model"]["unit"].update(rec_unit_dict)
+    else:
+      # rec_unit_dict.update({
+      #   "output_emit": {
+      #     "class": "compare", "from": "output", "kind": "not_equal", "value": targetb_blank_idx,
+      #     "initial_output": True}
+      # })
+      lm_dict["input_embed0"]["from"] = "data"
+      if prev_att_in_state:
+        lm_dict["lm"]["from"][0] = "base:prev:att"
+      net_dict["output"]["unit"].update(rec_unit_dict)
+      net_dict["output"]["unit"].update({
+        "lm_masked": {
+          "class": "masked_computation", "from": "prev_non_blank_embed", "mask": "prev:output_emit", "unit": {
+            "class": "subnetwork", "from": "data", "subnetwork": {
+              **lm_dict, "output": {"class": "copy", "from": "lm"}
+            }
+          }
+        },
+        "lm": {"class": "unmask", "from": "lm_masked", "mask": "prev:output_emit"}
       })
 
-    return label_model_net
+    return net_dict
 
   def get_length_model(net_dict):
+    if "am" in length_model_inputs:
+      net_dict["output"]["unit"].update({
+        "am": {"class": "copy", "from": "data:source"}
+      })
+    if "prev_out_embed" in length_model_inputs:
+      net_dict["output"]["unit"].update({
+        "prev_out_embed": {"class": "linear", "from": "prev:output", "activation": None, "n_out": 128}
+      })
+    if "prev_out_is_non_blank" in length_model_inputs:
+      net_dict["output"]["unit"].update({
+        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
+        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
+        "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
+        "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
+        "2d_emb0": {"class": "copy", "from": ["const1.0", "const0.0"]},
+        "2d_emb1": {"class": "copy", "from": ["const0.0", "const1.0"]},
+        # 1, if prev frame was segment boundary; 0, otherwise
+        # basically represents Kronecker delta
+        "prev_out_is_non_blank": {
+          "class": "switch", "condition": "prev:output_emit", "true_from": "2d_emb1", "false_from": "2d_emb0"}
+      })
     if label_dep_length_model:
       assert label_dep_means is not None
       assert max_seg_len is not None
@@ -577,114 +602,50 @@ def get_extended_net_dict(
 
     return net_dict
 
-  def get_output_dict(train, targetb):
-    """This is the decoder without attention. The attention is added via attention.py"""
-    return {
-      "class": "rec", "from": "encoder", "include_eos": True, "back_prop": (task == "train") and train, "unit": {
-        "am": {"class": "copy", "from": "data:source"}, # could make more efficient...
-
-        "cur_label": {"class": "gather", "from": "base:data:targetb", "axis": "t", "position": ":i"},
-        "is_label": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "not_equal"},
-        "is_blank": {"class": "compare", "from": "cur_label", "value": targetb_blank_idx, "kind": "equal"},
-
-        "prev_out_non_blank": {
-          "class": "reinterpret_data", "from": "prev:output_",
-          "set_sparse_dim": targetb_num_labels,
-          "set_sparse": True},
-
-        # embedding of the previous non-blank output
-        "prev_non_blank_embed0": {
-          "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
-        "prev_non_blank_embed_masked": {
-          "class": "masked_computation", "mask": "prev:output_emit",
-          "from": "prev_non_blank_embed0",
-          "unit": {"class": "copy", "from": "data"}},
-        "prev_non_blank_embed": {"class": "unmask", "from": "prev_non_blank_embed_masked", "mask": "prev:output_emit"},
-
-
-        # embedding of previous output (blank or non-blank)
-        "prev_out_embed": {"class": "linear", "from": "prev:output_", "activation": None, "n_out": 128},
-
-        # 1, if prev frame was segment boundary; 0, otherwise
-        # basically represents Kronecker delta
-        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
-        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
-        "const1.0_0": {"class": "constant", "value": 1.0, "with_batch_dim": True},
-        "const1.0": {"class": "expand_dims", "axis": "F", "from": "const1.0_0"},
-        "2d_emb0": {"class": "copy", "from": ["const1.0", "const0.0"]},
-        "2d_emb1": {"class": "copy", "from": ["const0.0", "const1.0"]},
-        "prev_out_is_non_blank": {
-          "class": "switch", "condition": "prev:output_emit", "true_from": "2d_emb1", "false_from": "2d_emb0"},
-
-        "output_log_prob": {
-          "class": "copy",
-          "from": ["label_log_prob", "blank_log_prob"]},
-        # beam search during search/ ground truth during training
+  def get_output_dict():
+    output_dict = {
+      "class": "rec", "from": "encoder", "include_eos": True, "back_prop": (task == "train"),
+      "target": "targetb", "size_target": "targetb" if task == "train" else None, "unit": {
         'output': {
-          'class': 'choice', 'target': targetb, 'beam_size': beam_size, 'from': "output_log_prob",
-          "input_type": "log_prob", "initial_output": sos_idx,
-          "cheating": "exclusive" if task == "train" else None,
-          "explicit_search_sources": ["prev:out_str", "prev:output"] if task == "search" and search_use_recomb else None,
-          "custom_score_combine": CodeWrapper("targetb_recomb_recog") if task == "search" and search_use_recomb else None,
-        },
-
-        # switchout
-        "output_": {
-          "class": "eval", "from": "output",
-          "eval": "self.network.get_config().typed_value('switchout_target')(source, network=self.network)",
-          "initial_output": sos_idx} if False else {
-          "class": "copy", "from": "output", "initial_output": sos_idx},
-        "out_str": {
-          "class": "eval",
-          "from": [
-            "prev:out_str",
-            "output_emit" if not with_silence else "output_is_non_sil_label",
-            "output"], "initial_output": None,
-          "out_type": {"shape": (), "dtype": "string"},
-          "eval": "self.network.get_config().typed_value('out_str')(source, network=self.network)"},
-
-        "output_is_not_blank": {
-          "class": "compare", "from": "output_", "value": targetb_blank_idx, "kind": "not_equal",
-          "initial_output": True},
-        "output_is_blank": {
-          "class": "compare", "from": "output_", "value": targetb_blank_idx, "kind": "equal",
-          "initial_output": False},
-
-        # This "output_emit" is True on the first label and whenever a label is output
-        # If there is a separate sil model, then this is only true if a non-silence label is output
+          'class': 'choice', 'target': "targetb", 'beam_size': beam_size,
+          'from': "data" if task == "train" else "output_log_prob",
+          "input_type": "log_prob",
+          "initial_output": sos_idx, "cheating": "exclusive" if task == "train" else None},
         "output_emit": {
-          "class": "copy", "from": "output_is_not_blank",
-          "initial_output": True, "is_output_layer": True} if not sep_sil_model else {
-          "class": "copy", "from": "output_is_non_sil_label", "initial_output": True
-        },
+          "class": "compare", "from": "output", "kind": "not_equal", "value": targetb_blank_idx, "initial_output": True}
+      }
+    }
 
+    if task != "train":
+      output_dict["unit"].update({
+        "output_log_prob": {
+          "class": "copy", "from": ["label_log_prob", "blank_log_prob"]}})
 
-      }, "target": targetb, "size_target": targetb if task == "train" else None,
-      "max_seq_len": "max_len_from('base:encoder') * 2"}
+    return output_dict
 
-  net_dict["output"] = get_output_dict(train=True, targetb="targetb")
+  net_dict["output"] = get_output_dict()
 
-  net_dict["output"]["unit"].update(get_label_model(sep_sil_model=sep_sil_model is not None))
+  net_dict = get_label_model(sep_sil_model=sep_sil_model is not None, net_dict=net_dict)
   net_dict = get_length_model(net_dict)
   # net_dict["output"]["unit"].update(get_ce_loss(targetb="targetb"))
-  if with_silence:
-    net_dict["output"]["unit"].update({
-      "output_is_sil": {
-        "class": "compare", "from": "output_", "value": sil_idx, "kind": "equal", "initial_output": False},
-      "output_is_not_sil": {
-        "class": "compare", "from": "output_", "value": sil_idx, "kind": "not_equal", "initial_output": True},
-      "output_is_non_sil_label": {
-        "class": "combine", "from": ["output_is_not_blank", "output_is_not_sil"], "kind": "logical_and",
-        "is_output_layer": True if task == "train" else False},
-    })
-    if task == "search":
-      net_dict.update({
-        "output_is_not_sil": {
-          "class": "compare", "from": "output_wo_b", "value": sil_idx, "kind": "not_equal"},
-        "output_wo_sil": {
-          "class": "masked_computation", "unit": {"class": "copy"}, "from": "output_wo_b", "mask": "output_is_not_sil"},
-      })
-      net_dict["decision"]["from"] = "output_wo_sil"
+  # if with_silence:
+  #   net_dict["output"]["unit"].update({
+  #     "output_is_sil": {
+  #       "class": "compare", "from": "output_", "value": sil_idx, "kind": "equal", "initial_output": False},
+  #     "output_is_not_sil": {
+  #       "class": "compare", "from": "output_", "value": sil_idx, "kind": "not_equal", "initial_output": True},
+  #     "output_is_non_sil_label": {
+  #       "class": "combine", "from": ["output_is_not_blank", "output_is_not_sil"], "kind": "logical_and",
+  #       "is_output_layer": True if task == "train" else False},
+  #   })
+    # if task == "search":
+    #   net_dict.update({
+    #     "output_is_not_sil": {
+    #       "class": "compare", "from": "output_wo_b", "value": sil_idx, "kind": "not_equal"},
+    #     "output_wo_sil": {
+    #       "class": "masked_computation", "unit": {"class": "copy"}, "from": "output_wo_b", "mask": "output_is_not_sil"},
+    #   })
+    #   net_dict["decision"]["from"] = "output_wo_sil"
 
   if feature_stddev is not None:
     assert type(feature_stddev) == float
@@ -798,7 +759,7 @@ def custom_construction_algo(idx, net_dict):
   except KeyError:
     pass
 
-  net_dict["output"]["unit"]["label_prob"]["loss_opts"]["label_smoothing"] = 0
+  net_dict["label_model"]["unit"]["label_prob"]["loss_opts"]["label_smoothing"] = 0
 
   return net_dict
 
