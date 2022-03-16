@@ -448,34 +448,40 @@ def add_attention(
     #     "att": {
     #       "class": "switch", "condition": "prev:output_is_not_blank", "true_from": "att1", "false_from": "att1"}})
 
-  def add_masked_attention():
-    net_dict["output"]["unit"].update({
-      "att_masked": {
-        "class": "masked_computation", "mask": "prev:output_is_not_blank", "from": "prev:att",
-        "unit": {"class": "copy", "from": "data"}},
-      "att_unmasked": {"class": "unmask", "from": "att_masked", "mask": "prev:output_is_not_blank"}})
+  def add_pooling():
+    att_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
+    readout_level_dict.update({
+      "segments0": {  # [B,t_sliced,D]
+        "class": "slice_nd", "from": "base:encoder", "start": "segment_starts", "size": "segment_lens"},
+      "segments": {
+        "class": "reinterpret_data", "from": "segments0", "set_dim_tags": {"stag:sliced-time:segments": att_time_tag}},
+      "att": {
+        "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "segments"}})
+
 
   if (att_seg_use_emb and att_seg_emb_size) or att_area == "seg":
     add_segment_information()
-  if att_seg_use_emb and att_seg_emb_size:
-    add_segmental_embedding_vector()
-  if att_area == "win":
-    if type(att_win_size) == int:
-      add_local_window()
+  if att_type != "pooling":
+    if att_seg_use_emb and att_seg_emb_size:
+      add_segmental_embedding_vector()
+    if att_area == "win":
+      if type(att_win_size) == int:
+        add_local_window()
+      else:
+        assert att_win_size == "full"
+        add_global_window()
     else:
-      assert att_win_size == "full"
-      add_global_window()
+      assert att_area == "seg"
+      add_segmental_window()
+    add_attention_query()
+    add_energies()
+    add_weights()
+    if att_weight_feedback:
+      add_weight_feedback()
+    add_attention_value_heads()
+    add_attention_vector()
   else:
-    assert att_area == "seg"
-    add_segmental_window()
-  add_attention_query()
-  add_energies()
-  add_weights()
-  if att_weight_feedback:
-    add_weight_feedback()
-  add_attention_value_heads()
-  add_attention_vector()
-  # add_masked_attention()
+    add_pooling()
 
   return net_dict
 
