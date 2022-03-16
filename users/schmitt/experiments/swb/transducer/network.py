@@ -538,6 +538,7 @@ def get_extended_net_dict(
       #     "initial_output": True}
       # })
       lm_dict["input_embed0"]["from"] = "data"
+      lm_dict["lm"]["name_scope"] = "lm"
       if prev_att_in_state:
         lm_dict["lm"]["from"][0] = "base:prev:att"
       net_dict["output"]["unit"].update(rec_unit_dict)
