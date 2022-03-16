@@ -260,7 +260,7 @@ def get_extended_net_dict(
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
   fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
   label_dep_length_model=False, search_use_recomb=True, feature_stddev=None, dump_align=False,
-  label_dep_means=None, max_seg_len=None):
+  label_dep_means=None, max_seg_len=None, hybrid_hmm_like_label_model=False):
 
   assert ctx_size == "inf" or type(ctx_size) == int
   assert not sep_sil_model or sil_idx == 0  # assume in order to construct output_prob vector (concat sil_prob, label_prob, blank_prob)
@@ -289,6 +289,13 @@ def get_extended_net_dict(
 
     "encoder": {"class": "copy", "from": "encoder0"},
   })
+
+  if hybrid_hmm_like_label_model:
+    net_dict.update({
+      "label_log_prob_framewise": {
+        "class": "linear", "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1, "dropout": 0.3,
+        "activation": "log_softmax", "from": "encoder"},
+    })
 
   if task == "train":
     net_dict.update({
@@ -430,24 +437,41 @@ def get_extended_net_dict(
           "class": "rec", "unit": "nativelstm2", "from": length_model_inputs, "n_out": 128, "L2": l2,
           "dropout": 0.3, "unit_opts": {"rec_weight_dropout": 0.3}}
 
-  def get_label_model(sep_sil_model, net_dict):
+  def get_label_model(net_dict):
     """Readout (per segment): linear layer which is used as input for the label model"""
     # during training, we mask the readout layer to save time and memory
 
-    rec_unit_dict = {
-      "prev_out_non_blank": {
-        "class": "reinterpret_data", "from": "prev:output", "set_sparse_dim": targetb_num_labels, "set_sparse": True},
-      "prev_non_blank_embed": {
-        "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
-      "readout_in": {
-        "class": "linear", "from": ["lm", "att"] if use_att else ["lm", "am"], "activation": None, "n_out": 1000},
-      "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
-      "label_log_prob0": {
-        "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
-        "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1},
-      "label_log_prob": {
-        "class": "combine", "kind": "add",
-        "from": ["label_log_prob0"] if not sep_sil_model else ["label_log_prob0", "non_sil_log_prob"]}}
+    rec_unit_dict = {}
+
+    if hybrid_hmm_like_label_model:
+      seg_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
+      rec_unit_dict.update({
+        "label_log_prob_framewise_segments": {  # [B,t_sliced,D]
+          "class": "slice_nd", "from": "base:label_log_prob_framewise", "start": "segment_starts",
+          "size": "segment_lens", "out_spatial_dim": seg_time_tag},
+        "label_log_prob0": {
+          "class": "reduce", "from": "label_log_prob_framewise_segments", "mode": "sum",
+          "axis": seg_time_tag},
+        "label_log_prob": {
+          "class": "activation", "activation": "log_softmax", "from": "label_log_prob0"
+        }
+
+      })
+    else:
+      rec_unit_dict.update({
+        "prev_out_non_blank": {
+          "class": "reinterpret_data", "from": "prev:output", "set_sparse_dim": targetb_num_labels, "set_sparse": True},
+        "prev_non_blank_embed": {
+          "class": "linear", "activation": None, "with_bias": False, "from": "prev_out_non_blank", "n_out": 621},
+        "readout_in": {
+          "class": "linear", "from": ["lm", "att"] if use_att else ["lm", "am"], "activation": None, "n_out": 1000},
+        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
+        "label_log_prob0": {
+          "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
+          "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1},
+        "label_log_prob": {
+          "class": "combine", "kind": "add",
+          "from": ["label_log_prob0"] if not sep_sil_model else ["label_log_prob0", "non_sil_log_prob"]}})
 
     lm_dict = {
       "input_embed0": {
@@ -463,7 +487,7 @@ def get_extended_net_dict(
         "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
     }
 
-    if sep_sil_model:
+    if sep_sil_model is not None:
       rec_unit_dict.update({
         "pool_segments": {
           "class": "copy", "from": "segments"},
@@ -630,7 +654,7 @@ def get_extended_net_dict(
 
   net_dict["output"] = get_output_dict()
 
-  net_dict = get_label_model(sep_sil_model=sep_sil_model is not None, net_dict=net_dict)
+  net_dict = get_label_model(net_dict=net_dict)
   net_dict = get_length_model(net_dict)
   # net_dict["output"]["unit"].update(get_ce_loss(targetb="targetb"))
   # if with_silence:
