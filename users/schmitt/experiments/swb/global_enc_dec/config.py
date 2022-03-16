@@ -1,4 +1,4 @@
-from .network import *
+from i6_experiments.users.schmitt.experiments.swb.global_enc_dec import network
 from i6_experiments.users.schmitt.experiments.swb.dataset import *
 from i6_experiments.users.schmitt.recombination import *
 from i6_experiments.users.schmitt.rna import *
@@ -10,9 +10,9 @@ from i6_experiments.users.schmitt.switchout import *
 from recipe.i6_core.returnn.config import ReturnnConfig, CodeWrapper
 
 
-class GlobalEncoderDecoderConfig():
+class GlobalEncoderDecoderConfig:
   def __init__(
-          self, vocab, target_num_labels=1030,
+          self, vocab, use_newer_model, target_num_labels=1030,
           epoch_split=6, beam_size=12,
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
           task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
@@ -68,6 +68,13 @@ class GlobalEncoderDecoderConfig():
     self.batch_size = 10000 if self.task == "train" else 4000
     self.accum_grad_multiple_step = 2
 
+    if use_newer_model:
+      custom_construction_algo = network.new_custom_construction_algo
+      get_net_dict = network.get_new_net_dict
+    else:
+      custom_construction_algo = network.custom_construction_algo
+      get_net_dict = network.get_net_dict
+
     self.import_prolog = ["from returnn.tf.util.data import DimensionTag", "import os", "import numpy as np",
                           "from subprocess import check_output, CalledProcessError"]
     self.function_prolog = [custom_construction_algo, _mask, random_mask, transform]
@@ -86,7 +93,9 @@ class GlobalEncoderDecoderConfig():
       self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
 
     if pretrain:
-      self.pretrain = {'copy_param_mode': 'subset', 'construction_algo': CodeWrapper("custom_construction_algo")}
+      self.pretrain = {
+        'copy_param_mode': 'subset',
+        'construction_algo': CodeWrapper("custom_construction_algo" if not use_newer_model else "new_custom_construction_algo")}
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
