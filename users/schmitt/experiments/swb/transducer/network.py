@@ -465,14 +465,19 @@ def get_extended_net_dict(
 
     if sep_sil_model:
       rec_unit_dict.update({
+        "pool_segments": {
+          "class": "copy", "from": "segments"},
         "pooled_segment": {
-          "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "segments"}, "sil_model": {
+          "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "pool_segments"},
+        "sil_model": {
           "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": ["pooled_segment"]},
         "sil_log_prob0": {"class": "linear", "from": "sil_model", "activation": None, "n_out": 1},
         "sil_log_prob1": {"class": "activation", "from": "sil_log_prob0", "activation": "log_sigmoid"},
         "non_sil_log_prob": {"class": "eval", "from": "sil_log_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
         # prob of sil/non-sil is combined with emit prob
-        "sil_log_prob": {"class": "combine", "kind": "add", "from": ["sil_log_prob1", "emit_log_prob"]}, })
+        "sil_log_prob": {
+          "class": "combine", "kind": "add",
+          "from": ["sil_log_prob1"] if task == "train" else ["sil_log_prob1", "emit_log_prob"]}})
 
     if task == "train":
       rec_unit_dict.update({
