@@ -357,7 +357,7 @@ def add_attention(
   def add_attention_query():
     readout_level_dict["att_query"] = {  # (B,D)
       "class": "linear", "from": "lm", "activation": None, "with_bias": False,
-      "n_out": EncKeyTotalDim, "is_output_layer": True if task == "train" else False}
+      "n_out": EncKeyTotalDim, "is_output_layer": False}
 
   def add_energies():
     if att_type == "dot":
@@ -379,7 +379,7 @@ def add_attention(
         "att_energy0": {  # (B, t_att, 1)
           "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": AttNumHeads},
         "att_energy": {"class": "reinterpret_data", "from": "att_energy0", "set_dim_tags": {"f": att_heads_tag},
-                       "is_output_layer": True if task == "train" else False}})
+                       "is_output_layer": False}})
     elif att_type == "mlp_complex":
       # use more complex MLP to calculate the energies
       readout_level_dict.update({
@@ -391,7 +391,7 @@ def add_attention(
         "att_energy1": {  # (B, t_att, 1)
           "class": "linear", "activation": "tanh", "with_bias": True, "from": ["att_energy0"], "n_out": AttNumHeads},
         "att_energy": {"class": "reinterpret_data", "from": "att_energy1", "set_dim_tags": {"f": att_heads_tag},
-                       "is_output_layer": True if task == "train" else False}})
+                       "is_output_layer": False}})
 
   def add_weights():
     readout_level_dict.update({
@@ -400,7 +400,7 @@ def add_attention(
         "energy_factor": EncKeyPerHeadDim ** -0.5},
       'att_weights': {
         "class": "dropout", "dropout_noise_shape": {"*": None}, "from": 'att_weights0',
-        "dropout": AttentionDropout, "is_output_layer": True if task == "train" else False}})
+        "dropout": AttentionDropout, "is_output_layer": False}})
 
   def add_weight_feedback():
     if (att_seg_use_emb and att_seg_emb_size) or not (att_area == "win" and att_win_size == "full"):
