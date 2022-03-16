@@ -497,9 +497,11 @@ def get_extended_net_dict(
       })
       lm_dict["input_embed0"]["from"] = "prev_non_blank_embed"
       rec_unit_dict.update(lm_dict)
-      rec_unit_dict["input_embed0"]["name_scope"] = "lm_masked/lm_masked/input_embed0"
-      rec_unit_dict["input_embed"]["name_scope"] = "lm_masked/lm_masked/input_embed"
-      rec_unit_dict["lm"]["name_scope"] = "lm_masked/lm_masked/lm"
+
+      rec_unit_dict["input_embed0"]["name_scope"] = "lm_masked/input_embed0"
+      rec_unit_dict["input_embed"]["name_scope"] = "lm_masked/input_embed"
+      rec_unit_dict["lm"]["name_scope"] = "lm_masked/lm"
+
       net_dict.update({
         "label_model": {
           "class": "rec", "from": "data:label_ground_truth", "include_eos": True, "back_prop": True,
