@@ -155,7 +155,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
     att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state, fast_rec_full,
     scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
-    fast_rec=False, pretrain=True, with_silence=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
+    fast_rec=False, pretrain=True, sep_sil_model=None, sil_idx=None, sos_idx=0,
     train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
     search_use_recomb=True, feature_stddev=None, recomb_bpe_merging=True, dump_align=False,
     label_dep_length_model=False, label_dep_means=None, max_seg_len=None, **kwargs):
@@ -202,7 +202,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       targetb_blank_idx=self.targetb_blank_idx, use_att=use_attention, fast_rec_full=fast_rec_full,
       label_smoothing=label_smoothing, emit_extra_loss=emit_extra_loss, emit_loss_scale=1.0,
       efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size, fast_rec=fast_rec,
-      with_silence=with_silence, sep_sil_model=sep_sil_model, sil_idx=sil_idx, sos_idx=sos_idx,
+      sep_sil_model=sep_sil_model, sil_idx=sil_idx, sos_idx=sos_idx,
       feature_stddev=feature_stddev, search_use_recomb=search_use_recomb, dump_align=dump_align,
       label_dep_length_model=label_dep_length_model, label_dep_means=label_dep_means,
       max_seg_len=max_seg_len)

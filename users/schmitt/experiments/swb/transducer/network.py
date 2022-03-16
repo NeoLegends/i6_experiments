@@ -258,13 +258,11 @@ def get_extended_net_dict(
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, length_model_inputs, prev_att_in_state, use_att,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
-  fast_rec=False, fast_rec_full=False, with_silence=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
+  fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
   label_dep_length_model=False, search_use_recomb=True, feature_stddev=None, dump_align=False,
   label_dep_means=None, max_seg_len=None):
 
   assert ctx_size == "inf" or type(ctx_size) == int
-  assert not with_silence or sil_idx is not None  # if model uses silence -> sil_idx must be set
-  assert not sep_sil_model or with_silence
   assert not sep_sil_model or sil_idx == 0  # assume in order to construct output_prob vector (concat sil_prob, label_prob, blank_prob)
   assert not label_dep_length_model or (label_dep_means is not None and max_seg_len is not None)
   assert task != "train" or not label_dep_length_model
