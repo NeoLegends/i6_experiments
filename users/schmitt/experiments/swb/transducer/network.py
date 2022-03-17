@@ -594,6 +594,8 @@ def get_extended_net_dict(
           "class": "reduce", "from": ["length_model_norm0"], "mode": "sum", "axes": ["stag:max_seg_len_range0:range"]},
       })
       net_dict["output"]["unit"].update({
+        "const0.0_0": {"class": "constant", "value": 0.0, "with_batch_dim": True},
+        "const0.0": {"class": "expand_dims", "axis": "F", "from": "const0.0_0"},
         "seg_lens_float": {"class": "cast", "dtype": "float32", "from": "segment_lens"},
         "length_model0": {
           "class": "eval", "from": ["seg_lens_float", "base:mean_seg_lens"],
