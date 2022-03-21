@@ -348,16 +348,22 @@ def get_extended_net_dict(
           "beam_width": 1, "use_native": True, "output_in_log_space": True,
           "ctc_opts": {"logits_normalize": False}} if task == "train" else None}
     })
-  # elif task == "search":
-  #   net_dict.update({
-  #     # for task "search" / search_output_layer
-  #     "output_wo_b0": {
-  #       "class": "masked_computation", "unit": {"class": "copy"}, "from": "output",
-  #       "mask": "output/output_is_non_sil_label" if (with_silence and task == "train") else "output/output_emit"},
-  #     "output_wo_b": {"class": "reinterpret_data", "from": "output_wo_b0", "set_sparse_dim": target_num_labels},
-  #     "decision": {
-  #       "class": "decide", "from": "output_wo_b", "loss": "edit_distance", "target": target, 'only_on_search': True}
-  #   })
+  elif task == "search":
+    net_dict.update({
+      "output_non_sil": {"class": "compare", "from": "output", "value": sil_idx, "kind": "not_equal"},
+      "output_non_blank": {"class": "compare", "from": "output", "value": targetb_blank_idx, "kind": "not_equal"},
+      "output_non_sil_non_blank": {
+        "class": "combine", "kind": "logical_and", "from": ["output_non_sil", "output_non_blank"],
+        "is_output_layer": True},
+      "output_wo_b0": {
+        "class": "masked_computation", "unit": {"class": "copy"}, "from": "output",
+        "mask": "output_non_sil_non_blank"},
+      "output_wo_b": {
+        "class": "reinterpret_data", "from": "output_wo_b0",
+        "set_sparse_dim": target_num_labels},
+      "decision": {
+        "class": "decide", "from": "output_wo_b", "loss": "edit_distance", "target": target, 'only_on_search': True}
+    })
 
   # Add encoder BLSTM stack.
   src = "conv_merged"
