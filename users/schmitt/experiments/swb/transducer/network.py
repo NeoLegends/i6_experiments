@@ -466,12 +466,13 @@ def get_extended_net_dict(
         "readout_in": {
           "class": "linear", "from": ["lm", "att"] if use_att else ["lm", "am"], "activation": None, "n_out": 1000},
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
+        # the following two get updated later if there is a separate silence model
         "label_log_prob0": {
           "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
-          "n_out": target_num_labels if not sep_sil_model else target_num_labels - 1},
+          "n_out": target_num_labels},
         "label_log_prob": {
           "class": "combine", "kind": "add",
-          "from": ["label_log_prob0"] if not sep_sil_model else ["label_log_prob0", "non_sil_log_prob"]}})
+          "from": ["label_log_prob0"]}})
 
     lm_dict = {
       "input_embed0": {
@@ -502,6 +503,9 @@ def get_extended_net_dict(
         "sil_log_prob": {
           "class": "combine", "kind": "add",
           "from": ["sil_log_prob1"] if task == "train" else ["sil_log_prob1", "emit_log_prob"]}})
+      # update original log prob by adding the separate silence model
+      rec_unit_dict["label_log_prob0"]["n_out"] = target_num_labels - 1
+      rec_unit_dict["label_log_prob"]["from"].append("non_sil_log_prob")
 
     if task == "train":
       rec_unit_dict.update({
@@ -541,6 +545,8 @@ def get_extended_net_dict(
       lm_dict["lm"]["name_scope"] = "lm"
       if prev_att_in_state:
         lm_dict["lm"]["from"][0] = "base:prev:att"
+      # in case of search, emit log prob needs to be added to the label log prob
+      rec_unit_dict["label_log_prob"]["from"].append("emit_log_prob")
       net_dict["output"]["unit"].update(rec_unit_dict)
       net_dict["output"]["unit"].update({
         "lm_masked": {
@@ -651,7 +657,10 @@ def get_extended_net_dict(
     if task != "train":
       output_dict["unit"].update({
         "output_log_prob": {
-          "class": "copy", "from": ["label_log_prob", "blank_log_prob"]}})
+          "class": "copy",
+          "from": ["label_log_prob", "blank_log_prob"] if not sep_sil_model else [
+            "sil_log_prob", "label_log_prob", "blank_log_prob"
+          ]}})
 
     return output_dict
 
