@@ -222,9 +222,9 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       self.train = get_dataset_dict_w_alignment(**train_data_opts)
       self.dev = get_dataset_dict_w_alignment(**cv_data_opts)
       self.eval_datasets = {'devtrain': get_dataset_dict_w_alignment(**devtrain_data_opts)}
-    # else:
-    #   assert search_data_opts
-    #   self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
+    elif self.task == "search":
+      assert search_data_opts
+      self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
 
     if pretrain and self.task == "train":
       self.pretrain = {'copy_param_mode': 'subset', 'construction_algo': CodeWrapper("custom_construction_algo")}
