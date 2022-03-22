@@ -449,6 +449,7 @@ def get_extended_net_dict(
 
     rec_unit_dict = {}
 
+    # this model uses no label context but only information from the encoder
     if hybrid_hmm_like_label_model:
       seg_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
       rec_unit_dict.update({
@@ -459,7 +460,7 @@ def get_extended_net_dict(
           "class": "reduce", "from": "label_log_prob_framewise_segments", "mode": "sum",
           "axis": seg_time_tag},
         "label_log_prob": {
-          "class": "activation", "activation": "log_softmax", "from": "label_log_prob0"
+          "class": "activation", "activation": "log_softmax", "from": ["label_log_prob0"]
         }
 
       })
@@ -480,39 +481,70 @@ def get_extended_net_dict(
           "class": "combine", "kind": "add",
           "from": ["label_log_prob0"]}})
 
-    lm_dict = {
-      "input_embed0": {
-        "class": "window", "window_size": 1, "window_left": 0,
-        "window_right": 0} if ctx_size == "inf" else {
-        "class": "window", "window_size": ctx_size, "window_right": 0, "window_left": ctx_size - 1},
-      "input_embed": {
-        "class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
-      "lm": {
-        "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
-        "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"} if ctx_size == "inf" else {
-        "class": "linear", "activation": "tanh", "n_out": lstm_dim,
-        "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
-    }
+      lm_dict = {
+        "input_embed0": {
+          "class": "window", "window_size": 1, "window_left": 0,
+          "window_right": 0} if ctx_size == "inf" else {
+          "class": "window", "window_size": ctx_size, "window_right": 0, "window_left": ctx_size - 1},
+        "input_embed": {
+          "class": "merge_dims", "from": "input_embed0", "axes": "except_time"},
+        "lm": {
+          "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim,
+          "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"} if ctx_size == "inf" else {
+          "class": "linear", "activation": "tanh", "n_out": lstm_dim,
+          "from": ["prev:att", "input_embed"] if prev_att_in_state else "input_embed"},
+      }
 
-    if sep_sil_model is not None:
-      rec_unit_dict.update({
-        "pool_segments": {
-          "class": "copy", "from": "segments"},
-        "pooled_segment": {
-          "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "pool_segments"},
-        "sil_model": {
-          "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": ["pooled_segment"]},
-        "sil_log_prob0": {"class": "linear", "from": "sil_model", "activation": None, "n_out": 1},
-        "sil_log_prob1": {"class": "activation", "from": "sil_log_prob0", "activation": "log_sigmoid"},
-        "non_sil_log_prob": {"class": "eval", "from": "sil_log_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
-        # prob of sil/non-sil is combined with emit prob
-        "sil_log_prob": {
-          "class": "combine", "kind": "add",
-          "from": ["sil_log_prob1"] if task == "train" else ["sil_log_prob1", "emit_log_prob"]}})
-      # update original log prob by adding the separate silence model
-      rec_unit_dict["label_log_prob0"]["n_out"] = target_num_labels - 1
-      rec_unit_dict["label_log_prob"]["from"].append("non_sil_log_prob")
+      if sep_sil_model is not None:
+        rec_unit_dict.update({
+          "pool_segments": {
+            "class": "copy", "from": "segments"},
+          "pooled_segment": {
+            "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "pool_segments"},
+          "sil_model": {
+            "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": ["pooled_segment"]},
+          "sil_log_prob0": {"class": "linear", "from": "sil_model", "activation": None, "n_out": 1},
+          "sil_log_prob1": {"class": "activation", "from": "sil_log_prob0", "activation": "log_sigmoid"},
+          "non_sil_log_prob": {"class": "eval", "from": "sil_log_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
+          # prob of sil/non-sil is combined with emit prob
+          "sil_log_prob": {
+            "class": "combine", "kind": "add",
+            "from": ["sil_log_prob1"] if task == "train" else ["sil_log_prob1", "emit_log_prob"]}})
+        # update original log prob by adding the separate silence model
+        rec_unit_dict["label_log_prob0"]["n_out"] = target_num_labels - 1
+        rec_unit_dict["label_log_prob"]["from"].append("non_sil_log_prob")
 
+      if task == "train":
+        # rec_unit_dict.update({
+        #   "output": {
+        #     'class': 'choice', 'target': "label_ground_truth", 'beam_size': beam_size, 'from': "data",
+        #     "initial_output": sos_idx, "cheating": "exclusive" if task == "train" else None}, })
+        lm_dict["input_embed0"]["from"] = "prev_non_blank_embed"
+        rec_unit_dict.update(lm_dict)
+
+        rec_unit_dict["input_embed0"]["name_scope"] = "lm_masked/input_embed0"
+        rec_unit_dict["input_embed"]["name_scope"] = "lm_masked/input_embed"
+        rec_unit_dict["lm"]["name_scope"] = "lm_masked/lm"
+
+        net_dict.update({
+          "label_model": {
+            "class": "rec", "from": "data:label_ground_truth", "include_eos": True, "back_prop": True,
+            "name_scope": "output/rec", "is_output_layer": True, "unit": {}}})
+        net_dict["label_model"]["unit"].update(rec_unit_dict)
+      else:
+        lm_dict["input_embed0"]["from"] = "data"
+        lm_dict["lm"]["name_scope"] = "lm"
+        if prev_att_in_state:
+          lm_dict["lm"]["from"][0] = "base:prev:att"
+        # in case of search, emit log prob needs to be added to the label log prob
+        net_dict["output"]["unit"].update({
+          "lm_masked": {
+            "class": "masked_computation", "from": "prev_non_blank_embed", "mask": "prev:output_emit", "unit": {
+              "class": "subnetwork", "from": "data", "subnetwork": {
+                **lm_dict, "output": {"class": "copy", "from": "lm"}}}},
+          "lm": {"class": "unmask", "from": "lm_masked", "mask": "prev:output_emit"}})
+
+    # here, we add general components which are needed for train or search
     if task == "train":
       rec_unit_dict.update({
         "segment_lens": {
@@ -527,43 +559,17 @@ def get_extended_net_dict(
           "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}},
         "output": {
           'class': 'choice', 'target': "label_ground_truth", 'beam_size': beam_size, 'from': "data",
-          "initial_output": sos_idx, "cheating": "exclusive" if task == "train" else None},
+          "initial_output": sos_idx, "cheating": "exclusive" if task == "train" else None}
       })
-      lm_dict["input_embed0"]["from"] = "prev_non_blank_embed"
-      rec_unit_dict.update(lm_dict)
-
-      rec_unit_dict["input_embed0"]["name_scope"] = "lm_masked/input_embed0"
-      rec_unit_dict["input_embed"]["name_scope"] = "lm_masked/input_embed"
-      rec_unit_dict["lm"]["name_scope"] = "lm_masked/lm"
-
       net_dict.update({
         "label_model": {
           "class": "rec", "from": "data:label_ground_truth", "include_eos": True, "back_prop": True,
           "name_scope": "output/rec", "is_output_layer": True, "unit": {}}})
       net_dict["label_model"]["unit"].update(rec_unit_dict)
     else:
-      # rec_unit_dict.update({
-      #   "output_emit": {
-      #     "class": "compare", "from": "output", "kind": "not_equal", "value": targetb_blank_idx,
-      #     "initial_output": True}
-      # })
-      lm_dict["input_embed0"]["from"] = "data"
-      lm_dict["lm"]["name_scope"] = "lm"
-      if prev_att_in_state:
-        lm_dict["lm"]["from"][0] = "base:prev:att"
       # in case of search, emit log prob needs to be added to the label log prob
       rec_unit_dict["label_log_prob"]["from"].append("emit_log_prob")
       net_dict["output"]["unit"].update(rec_unit_dict)
-      net_dict["output"]["unit"].update({
-        "lm_masked": {
-          "class": "masked_computation", "from": "prev_non_blank_embed", "mask": "prev:output_emit", "unit": {
-            "class": "subnetwork", "from": "data", "subnetwork": {
-              **lm_dict, "output": {"class": "copy", "from": "lm"}
-            }
-          }
-        },
-        "lm": {"class": "unmask", "from": "lm_masked", "mask": "prev:output_emit"}
-      })
 
     return net_dict
 
