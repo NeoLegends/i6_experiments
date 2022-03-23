@@ -139,7 +139,10 @@ def calc_segment_stats_with_sil(blank_idx, sil_idx):
   plt.hist(hist_data, bins=30, range=(0, 50))
   ax = plt.gca()
   quantiles = [np.quantile(hist_data, q) for q in [.90, .95, .99]]
-  for q in quantiles:
+  for n, q in zip([90, 95, 99], quantiles):
+    # write quantiles to file
+    with open("percentile_%s" % n, "w+") as f:
+      f.write(str(q))
     ax.axvline(q)
   plt.savefig("non_sil_histogram.pdf")
   plt.close()
