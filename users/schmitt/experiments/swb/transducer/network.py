@@ -507,9 +507,11 @@ def get_extended_net_dict(
           "sil_log_prob1": {"class": "activation", "from": "sil_log_prob0", "activation": "log_sigmoid"},
           "non_sil_log_prob": {"class": "eval", "from": "sil_log_prob0", "eval": "tf.math.log_sigmoid(-source(0))"},
           # prob of sil/non-sil is combined with emit prob
+          # if we have a label dep length model, we first concat the sil log prob with the label log prob and then
+          # add the emit log prob because there is a emit prob for every label
           "sil_log_prob": {
             "class": "combine", "kind": "add",
-            "from": ["sil_log_prob1"] if task == "train" else ["sil_log_prob1", "emit_log_prob"]}})
+            "from": ["sil_log_prob1"] if task == "train" or label_dep_length_model else ["sil_log_prob1", "emit_log_prob"]}})
         # update original log prob by adding the separate silence model
         rec_unit_dict["label_log_prob0"]["n_out"] = target_num_labels - 1
         rec_unit_dict["label_log_prob"]["from"].append("non_sil_log_prob")
@@ -568,7 +570,19 @@ def get_extended_net_dict(
       net_dict["label_model"]["unit"].update(rec_unit_dict)
     else:
       # in case of search, emit log prob needs to be added to the label log prob
-      rec_unit_dict["label_log_prob"]["from"].append("emit_log_prob")
+      # if there is a label dep length model, we first concat the silence log prob with the label log prob
+      # and then add the emit log prob
+      if sep_sil_model and label_dep_length_model:
+        rec_unit_dict.update({
+          "label_log_prob1": {
+            "class": "combine", "from": ["label_log_prob0", "non_sil_log_prob"], "kind": "add", },
+          "label_log_prob2": {
+            "class": "copy", "from": ["sil_log_prob", "label_log_prob1"], },
+          "label_log_prob": {
+            "class": "combine", "from": ["label_log_prob2", "emit_log_prob"], "kind": "add", }
+        })
+      else:
+        rec_unit_dict["label_log_prob"]["from"].append("emit_log_prob")
       net_dict["output"]["unit"].update(rec_unit_dict)
 
     return net_dict
@@ -668,9 +682,10 @@ def get_extended_net_dict(
 
     if task != "train":
       output_dict["unit"].update({
+        # in case of a label dep length model, the silence log prob is earlier concatenated with the label log prob
         "output_log_prob": {
           "class": "copy",
-          "from": ["label_log_prob", "blank_log_prob"] if not sep_sil_model else [
+          "from": ["label_log_prob", "blank_log_prob"] if not sep_sil_model or label_dep_length_model else [
             "sil_log_prob", "label_log_prob", "blank_log_prob"
           ]}})
 
