@@ -350,7 +350,9 @@ def get_extended_net_dict(
     })
   elif task == "search":
     net_dict.update({
-      "output_non_sil": {"class": "compare", "from": "output", "value": sil_idx, "kind": "not_equal"},
+      "output_non_sil": {
+        "class": "compare", "from": "output", "value": sil_idx if sil_idx is not None else -1,
+        "kind": "not_equal"},
       "output_non_blank": {"class": "compare", "from": "output", "value": targetb_blank_idx, "kind": "not_equal"},
       "output_non_sil_non_blank": {
         "class": "combine", "kind": "logical_and", "from": ["output_non_sil", "output_non_blank"],
