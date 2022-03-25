@@ -691,6 +691,16 @@ def get_extended_net_dict(
             "sil_log_prob", "label_log_prob", "blank_log_prob"
           ]}})
 
+    if task == "search" and search_use_recomb:
+      output_dict["unit"]["output"]["custom_score_combine"] = CodeWrapper("targetb_recomb_recog")
+      output_dict["unit"]["output"]["explicit_search_sources"] = ["prev:out_str", "prev:output"]
+      output_dict["unit"].update({
+        "out_str": {
+          "class": "eval", "eval": "self.network.get_config().typed_value('out_str')(source, network=self.network)",
+          "from": ["prev:out_str", "output_emit", "output"], "initial_output": None,
+          "out_type": {"dtype": "string", "shape": ()}, },
+      })
+
     return output_dict
 
   net_dict["output"] = get_output_dict()
