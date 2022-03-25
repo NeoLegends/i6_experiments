@@ -155,7 +155,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
     att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state, fast_rec_full,
     scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
-    hybrid_hmm_like_label_model=False,
+    hybrid_hmm_like_label_model=False, att_query="lm",
     fast_rec=False, pretrain=True, sep_sil_model=None, sil_idx=None, sos_idx=0,
     train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
     search_use_recomb=True, feature_stddev=None, recomb_bpe_merging=True, dump_align=False,
@@ -215,7 +215,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
         att_seg_clamp_size=att_seg_clamp_size, att_seg_left_size=att_seg_left_size,
         att_seg_right_size=att_seg_right_size, att_area=att_area, AttNumHeads=att_num_heads,
         EncValuePerHeadDim=int(lstm_dim * 2 // att_num_heads), l2=0.0001, AttentionDropout=0.1,
-        EncKeyPerHeadDim=int(lstm_dim // att_num_heads))
+        EncKeyPerHeadDim=int(lstm_dim // att_num_heads), att_query=att_query)
 
     if self.task == "train":
       assert train_data_opts and cv_data_opts and devtrain_data_opts

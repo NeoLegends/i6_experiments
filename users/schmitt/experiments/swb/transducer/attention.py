@@ -26,7 +26,7 @@ import copy
 def add_attention(
   net_dict, att_seg_emb_size, att_seg_use_emb, att_win_size, task, EncValueTotalDim, EncValueDecFactor, EncKeyTotalDim,
   att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
-  AttNumHeads, EncValuePerHeadDim, l2, EncKeyPerHeadDim, AttentionDropout):
+  AttNumHeads, EncValuePerHeadDim, l2, EncKeyPerHeadDim, AttentionDropout, att_query):
   """This function expects a network dictionary of an "extended transducer" model and adds a self-attention mechanism
   according to some parameters set in the returnn config.
 
@@ -355,8 +355,22 @@ def add_attention(
       add_embedding()
 
   def add_attention_query():
+    if "am" in att_query:
+      readout_level_dict.update({
+        "am_position0": {
+          "class": "combine", "kind": "add", "from": ["segment_lens", "segment_starts"]},
+        "const1": {"class": "constant", "value": 1}, "const0": {"class": "constant", "value": 0},
+        "am_position1": {
+          "class": "combine", "kind": "sub", "from": ["am_position0", "const1"]},
+        "am_smaller_0": {
+          "class": "compare", "from": ["am_position1", "const0"], "kind": "less"},
+        "am_position": {
+          "class": "switch", "condition": "am_smaller_0", "true_from": "const0", "false_from": "am_position1"},
+        "am": {
+          "class": "gather", "from": "base:encoder", "position": "am_position", "axis": "t"},
+      })
     readout_level_dict["att_query"] = {  # (B,D)
-      "class": "linear", "from": "lm", "activation": None, "with_bias": False,
+      "class": "linear", "from": att_query, "activation": None, "with_bias": False,
       "n_out": EncKeyTotalDim, "is_output_layer": False}
 
   def add_energies():
