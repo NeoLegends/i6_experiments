@@ -260,7 +260,7 @@ def get_extended_net_dict(
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
   fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
   label_dep_length_model=False, search_use_recomb=True, feature_stddev=None, dump_align=False,
-  label_dep_means=None, max_seg_len=None, hybrid_hmm_like_label_model=False):
+  label_dep_means=None, max_seg_len=None, hybrid_hmm_like_label_model=False, length_model_focal_loss=2.0):
 
   assert ctx_size == "inf" or type(ctx_size) == int
   assert not sep_sil_model or sil_idx == 0  # assume in order to construct output_prob vector (concat sil_prob, label_prob, blank_prob)
@@ -663,7 +663,7 @@ def get_extended_net_dict(
         "emit_blank_prob": {
           "class": "activation", "from": "emit_blank_log_prob",
           "activation": "exp", "target": "emit_ground_truth",
-          "loss": "ce", "loss_opts": {"focal_loss_factor": 2.0}}
+          "loss": "ce", "loss_opts": {"focal_loss_factor": length_model_focal_loss}}
       })
 
     return net_dict
