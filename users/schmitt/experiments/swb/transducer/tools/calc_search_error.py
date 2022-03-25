@@ -29,6 +29,7 @@ def dump(ref_dataset, search_dataset, blank_idx):
   seq_idx = 0
   num_seqs = 0
   num_search_errors = 0
+  only_blanks = 0
 
   with open("search_error_log", "w+") as f:
     f.write("Search error log\n")
@@ -56,9 +57,13 @@ def dump(ref_dataset, search_dataset, blank_idx):
     # get seq log likelihood by summing over individual frames
     ref_output_log_prob = np.sum(ref_label_emit_log_probs_seq, axis=0) + np.sum(ref_blank_log_probs_seq, axis=0)
 
-    search_out = rnn.engine.run_single(dataset=search_dataset, seq_idx=seq_idx, output_dict=output_dict)
     search_dataset.load_seqs(seq_idx, seq_idx + 1)
     search_align = search_dataset.get_data(seq_idx, "alignment")
+    if len(search_align[search_align != blank_idx]) == 0:
+      only_blanks += 1
+      seq_idx += 1
+      continue
+    search_out = rnn.engine.run_single(dataset=search_dataset, seq_idx=seq_idx, output_dict=output_dict)
     # get log probs for labels, blank and emit
     search_label_log_prob = search_out["label_log_prob-out"][0]  # [S, V]
     search_blank_log_prob = search_out["blank_log_prob-out"][0]  # [T, 1]
@@ -98,6 +103,8 @@ def dump(ref_dataset, search_dataset, blank_idx):
 
   with open("search_errors", "w+") as f:
     f.write(str(num_search_errors / num_seqs))
+
+  print("Number of only-blank sequences: ", only_blanks)
 
 
 def net_dict_add_losses(net_dict):
