@@ -159,7 +159,8 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     fast_rec=False, pretrain=True, sep_sil_model=None, sil_idx=None, sos_idx=0,
     train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
     search_use_recomb=False, feature_stddev=None, recomb_bpe_merging=True, dump_align=False,
-    label_dep_length_model=False, label_dep_means=None, max_seg_len=None, length_model_focal_loss=2.0, **kwargs):
+    label_dep_length_model=False, label_dep_means=None, max_seg_len=None, length_model_focal_loss=2.0,
+    label_model_focal_loss=2.0, **kwargs):
 
     super().__init__(*args, **kwargs)
 
@@ -207,7 +208,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       feature_stddev=feature_stddev, search_use_recomb=search_use_recomb, dump_align=dump_align,
       label_dep_length_model=label_dep_length_model, label_dep_means=label_dep_means,
       max_seg_len=max_seg_len, hybrid_hmm_like_label_model=hybrid_hmm_like_label_model,
-      length_model_focal_loss=length_model_focal_loss)
+      length_model_focal_loss=length_model_focal_loss, label_model_focal_loss=label_model_focal_loss)
     if use_attention:
       self.network = add_attention(
         self.network, att_seg_emb_size=att_seg_emb_size, att_seg_use_emb=att_seg_use_emb,
