@@ -336,3 +336,148 @@ def new_custom_construction_algo(idx, net_dict):
     # Use label smoothing only at the very end.
     net_dict["output"]["unit"]["output_prob"]["loss_opts"]["label_smoothing"] = 0
     return net_dict
+
+
+def get_net_dict_like_seg_model(
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
+  net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
+  net_dict.update({
+    "source": {
+      "class": "eval",
+      "eval": "self.network.get_config().typed_value('transform')(source(0, as_data=True), network=self.network)"},
+    "source0": {"class": "split_dims", "axis": "F", "dims": (-1, 1), "from": "source"},  # (T,40,1)
+
+    # Lingvo: ep.conv_filter_shapes = [(3, 3, 1, 32), (3, 3, 32, 32)],  ep.conv_filter_strides = [(2, 2), (2, 2)]
+    "conv0": {
+      "class": "conv", "from": "source0", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
+      "with_bias": True, "auto_use_channel_first": False},  # (T,40,32)
+    "conv0p": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv0",
+      "use_channel_first": False},  # (T,20,32)
+    "conv1": {
+      "class": "conv", "from": "conv0p", "padding": "same", "filter_size": (3, 3), "n_out": 32, "activation": None,
+      "with_bias": True, "auto_use_channel_first": False},  # (T,20,32)
+    "conv1p": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv1",
+      "use_channel_first": False},  # (T,10,32)
+    "conv_merged": {"class": "merge_dims", "from": "conv1p", "axes": "static"},  # (T,320)
+
+    "lstm0_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": "conv_merged", "L2": 0.0001},
+    "lstm0_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": "conv_merged", "L2": 0.0001},
+    "lstm0_pool": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (3,), "from": ["lstm0_fw", "lstm0_bw"],
+      "trainable": False},
+
+    "lstm1_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": ["lstm0_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm1_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": ["lstm0_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm1_pool": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (2,), "from": ["lstm1_fw", "lstm1_bw"],
+      "trainable": False},
+
+    "lstm2_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": ["lstm1_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm2_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": ["lstm1_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm2_pool": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1,), "from": ["lstm2_fw", "lstm2_bw"],
+      "trainable": False},
+
+    "lstm3_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": ["lstm2_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm3_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": ["lstm2_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm3_pool": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1,), "from": ["lstm3_fw", "lstm3_bw"],
+      "trainable": False},
+
+    "lstm4_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": ["lstm3_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm4_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": ["lstm3_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm4_pool": {
+      "class": "pool", "mode": "max", "padding": "same", "pool_size": (1,), "from": ["lstm4_fw", "lstm4_bw"],
+      "trainable": False},
+
+    "lstm5_fw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": ["lstm4_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+    "lstm5_bw": {
+      "class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": ["lstm4_pool"],
+      "dropout": 0.3, "L2": 0.0001},
+
+    "encoder": {"class": "copy", "from": ["lstm5_fw", "lstm5_bw"]},  # dim: EncValueTotalDim
+    "enc_ctx": {
+      "class": "linear", "activation": None, "with_bias": False, "from": ["encoder"],
+      "n_out": att_key_dim, "L2": 0.0001, "dropout": 0.2},
+    # preprocessed_attended in Blocks
+    "inv_fertility": {
+      "class": "linear", "activation": "sigmoid", "with_bias": False, "from": ["encoder"], "n_out": att_num_heads},
+    "enc_value": {"class": "split_dims", "axis": "F", "dims": (att_num_heads, -1), "from": ["encoder"]},
+    # (B, enc-T, H, D'/H)
+
+    "output": {
+      "class": "rec", "from": [], "unit": {
+        'output': {
+          'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": 0},
+        "end": {"class": "compare", "from": ["output"], "value": 0},
+        'target_embed': {
+          'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
+          "initial_output": 0},  # feedback_input
+        "weight_feedback": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
+          "n_out": att_key_dim},
+        "att_query": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["lm"], "n_out": att_key_dim},
+        "energy_in": {
+          "class": "combine", "kind": "add", "from": ["base:enc_ctx", "weight_feedback", "att_query"],
+          "n_out": att_key_dim},
+        "energy_tanh": {"class": "activation", "activation": "tanh", "from": ["energy_in"]},
+        "energy": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["energy_tanh"], "n_out": att_num_heads},
+        # (B, enc-T, H)
+        "att_weights0": {
+          "class": "softmax_over_spatial", "from": ["energy"],
+          "energy_factor": (att_key_dim // att_num_heads) ** -0.5},  # (B, enc-T, H)
+        "att_weights": {
+          "class": "dropout", "dropout": 0.1, "dropout_noise_shape": {"*": None}, "from": "att_weights0"},
+        "accum_att_weights": {
+          "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+          "eval": "source(0) + source(1) * source(2) * 0.5",
+          "out_type": {"dim": att_num_heads, "shape": (None, att_num_heads)}},
+        "att0": {"class": "generic_attention", "weights": "att_weights", "base": "base:enc_value"},  # (B, H, V)
+        "att": {"class": "merge_dims", "axes": "except_batch", "from": ["att0"]},  # (B, H*V)
+        "lm": {"class": "rec", "unit": "nativelstm2", "from": ["prev:target_embed", "prev:att"], "n_out": lstm_dim},
+        # transform
+        "readout_in": {"class": "linear", "from": ["lm", "att"], "activation": None, "n_out": 1000},
+        # merge + post_merge bias
+        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
+        "output_prob": {
+          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "bpe", "loss": "ce",
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": "bpe", "max_seq_len": "max_len_from('base:encoder')"},
+
+    "decision": {
+      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
+        # "debug_print": True
+      }}})
+
+  if feature_stddev is not None:
+    assert type(feature_stddev) == float
+    net_dict["source_stddev"] = {
+      "class": "eval", "from": "data", "eval": "source(0) / " + str(feature_stddev)
+    }
+    net_dict["source"]["from"] = "source_stddev"
+
+  return net_dict
+
