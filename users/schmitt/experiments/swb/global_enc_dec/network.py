@@ -286,6 +286,13 @@ def get_new_net_dict(
         # "debug_print": True
       }}}
 
+  if feature_stddev is not None:
+    assert type(feature_stddev) == float
+    net_dict["source_stddev"] = {
+      "class": "eval", "from": "data", "eval": "source(0) / " + str(feature_stddev)
+    }
+    net_dict["source"]["from"] = "source_stddev"
+
   return net_dict
 
 
