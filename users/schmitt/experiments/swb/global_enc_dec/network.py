@@ -1,4 +1,5 @@
-def get_net_dict(lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red):
+def get_net_dict(
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
   att_key_per_head_dim = att_key_dim // att_num_heads
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
   net_dict.update({
@@ -176,7 +177,8 @@ def custom_construction_algo(idx, net_dict):
   return net_dict
 
 
-def get_new_net_dict(lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red):
+def get_new_net_dict(
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
   net_dict = {
     "source": {
       "class": "eval",
@@ -249,7 +251,8 @@ def get_new_net_dict(lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l
       "class": "rec", "from": [], "unit": {
         'output': {
           'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": 0},
-        "end": {"class": "compare", "from": ["output"], "value": 0}, 'target_embed': {
+        "end": {"class": "compare", "from": ["output"], "value": 0},
+        'target_embed': {
           'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
           "initial_output": 0},  # feedback_input
         "weight_feedback": {
