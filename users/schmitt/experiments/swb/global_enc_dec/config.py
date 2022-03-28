@@ -12,8 +12,8 @@ from recipe.i6_core.returnn.config import ReturnnConfig, CodeWrapper
 
 class GlobalEncoderDecoderConfig:
   def __init__(
-          self, vocab, use_newer_model, target_num_labels=1030,
-          epoch_split=6, beam_size=12,
+          self, vocab, glob_model_type, target_num_labels=1030,
+          epoch_split=6, beam_size=12, feature_stddev=None,
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
           task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
           train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
@@ -28,7 +28,8 @@ class GlobalEncoderDecoderConfig:
     self.vocab = vocab
     self.rasr_config = rasr_config
     self.epoch_split = epoch_split
-    self.cache_size = "0"
+    if glob_model_type != "like-seg":
+      self.cache_size = "0"
     self.search_output_layer = "decision"
     self.debug_print_layer_output_template = True
     self.batching = "random"
@@ -40,12 +41,12 @@ class GlobalEncoderDecoderConfig:
     self.gradient_clip = 0
     self.adam = True
     self.optimizer_epsilon = 1e-8
-    self.accum_grad_multiple_step = 3
+    self.accum_grad_multiple_step = 2
     self.stop_on_nonfinite_train_score = False
     self.tf_log_memory_usage = True
     self.gradient_noise = 0.0
     self.learning_rate = 0.001
-    self.min_learning_rate = self.learning_rate / 50.
+    self.min_learning_rate = self.learning_rate / 50. if glob_model_type != "like-seg" else 2e-05
     self.learning_rate_control = "newbob_multi_epoch"
     self.learning_rate_control_error_measure = "dev_error_output/output_prob"
     self.learning_rate_control_relative_error_relative_lr = True
@@ -66,13 +67,18 @@ class GlobalEncoderDecoderConfig:
         "dim": self.target_num_labels, "sparse": True}}
 
     self.batch_size = 10000 if self.task == "train" else 4000
-    self.accum_grad_multiple_step = 2
 
-    if use_newer_model:
+    if glob_model_type == "new":
       custom_construction_algo = network.new_custom_construction_algo
+      custom_construction_algo_str = "new_custom_construction_algo"
       get_net_dict = network.get_new_net_dict
+    elif glob_model_type == "like-seg":
+      custom_construction_algo = network.custom_construction_algo
+      custom_construction_algo_str = "custom_construction_algo"
+      get_net_dict = network.get_net_dict_like_seg_model
     else:
       custom_construction_algo = network.custom_construction_algo
+      custom_construction_algo_str = "custom_construction_algo"
       get_net_dict = network.get_net_dict
 
     self.import_prolog = ["from returnn.tf.util.data import DimensionTag", "import os", "import numpy as np",
@@ -81,21 +87,21 @@ class GlobalEncoderDecoderConfig:
 
     self.network = get_net_dict(
       lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim, beam_size=beam_size, sos_idx=sos_idx,
-      time_red=time_red, l2=0.0001, learning_rate=self.learning_rate)
+      time_red=time_red, l2=0.0001, learning_rate=self.learning_rate, feature_stddev=feature_stddev)
 
     if self.task == "train":
       assert train_data_opts and cv_data_opts and devtrain_data_opts
       self.train = get_dataset_dict_wo_alignment(**train_data_opts)
       self.dev = get_dataset_dict_wo_alignment(**cv_data_opts)
       self.eval_datasets = {'devtrain': get_dataset_dict_wo_alignment(**devtrain_data_opts)}
-    else:
+    elif self.task == "search":
       assert search_data_opts
       self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
 
     if pretrain:
       self.pretrain = {
         'copy_param_mode': 'subset',
-        'construction_algo': CodeWrapper("custom_construction_algo" if not use_newer_model else "new_custom_construction_algo")}
+        'construction_algo': CodeWrapper(custom_construction_algo_str)}
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
