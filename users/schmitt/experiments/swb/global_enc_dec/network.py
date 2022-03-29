@@ -1,5 +1,5 @@
 def get_net_dict(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
   att_key_per_head_dim = att_key_dim // att_num_heads
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
   net_dict.update({
@@ -60,7 +60,7 @@ def get_net_dict(
     "output": {
       "class": "rec", "from": [], "unit": {
         'output': {
-          'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"],
+          'class': 'choice', 'target': target, 'beam_size': beam_size, 'from': ["output_prob"],
           "initial_output": sos_idx},
         "end": {"class": "compare", "from": ["output"], "value": 0},
         'target_embed': {
@@ -91,12 +91,12 @@ def get_net_dict(
         # merge + post_merge bias
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
         "output_prob": {
-          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "bpe", "loss": "ce",
-          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}}, "target": "bpe",
+          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}}, "target": target,
           "max_seq_len": "max_len_from('base:encoder')"},
 
     "decision": {
-      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
+      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
       }
     }
   })
@@ -178,7 +178,7 @@ def custom_construction_algo(idx, net_dict):
 
 
 def get_new_net_dict(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
   net_dict = {"#info": {"att_num_heads": att_num_heads, "enc_val_per_head": (lstm_dim * 2) // att_num_heads}}
   net_dict.update({
     "source": {
@@ -251,7 +251,7 @@ def get_new_net_dict(
     "output": {
       "class": "rec", "from": [], "unit": {
         'output': {
-          'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": 0},
+          'class': 'choice', 'target': target, 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": sos_idx},
         "end": {"class": "compare", "from": ["output"], "value": 0},
         'target_embed': {
           'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
@@ -279,11 +279,11 @@ def get_new_net_dict(
         "readout_in": {"class": "linear", "from": ["s", "prev:target_embed", "att"], "activation": None, "n_out": 1000},
         # merge + post_merge bias
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]}, "output_prob": {
-          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "bpe", "loss": "ce",
-          "loss_opts": {"label_smoothing": 0.1}}}, "target": "bpe", "max_seq_len": "max_len_from('base:encoder')"},
+          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": target, "max_seq_len": "max_len_from('base:encoder')"},
 
     "decision": {
-      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
+      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
         # "debug_print": True
       }}})
 
@@ -341,7 +341,7 @@ def new_custom_construction_algo(idx, net_dict):
 
 
 def get_net_dict_like_seg_model(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
   net_dict.update({
     "source": {
@@ -432,7 +432,7 @@ def get_net_dict_like_seg_model(
     "output": {
       "class": "rec", "from": [], "unit": {
         'output': {
-          'class': 'choice', 'target': 'bpe', 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": 0},
+          'class': 'choice', 'target': target, 'beam_size': beam_size, 'from': ["output_prob"], "initial_output": sos_idx},
         "end": {"class": "compare", "from": ["output"], "value": 0},
         'target_embed': {
           'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
@@ -466,11 +466,11 @@ def get_net_dict_like_seg_model(
         # merge + post_merge bias
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
         "output_prob": {
-          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "bpe", "loss": "ce",
-          "loss_opts": {"label_smoothing": 0.1}}}, "target": "bpe", "max_seq_len": "max_len_from('base:encoder')"},
+          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": target, "max_seq_len": "max_len_from('base:encoder')"},
 
     "decision": {
-      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
+      "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
         # "debug_print": True
       }}})
 

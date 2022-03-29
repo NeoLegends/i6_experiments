@@ -17,7 +17,7 @@ class GlobalEncoderDecoderConfig:
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
           task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
           train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
-          time_red=(3, 2), pretrain=True, pretrain_reps=None, post_config={}):
+          time_red=(3, 2), pretrain=True, pretrain_reps=None, label_name="bpe", post_config={}):
 
     self.post_config = post_config
 
@@ -63,7 +63,7 @@ class GlobalEncoderDecoderConfig:
       "data": {
         "dim": 40,
         "same_dim_tags_as": {"t": CodeWrapper("DimensionTag(kind=DimensionTag.Types.Spatial, description='time')")}},
-      "bpe": {
+      label_name: {
         "dim": self.target_num_labels, "sparse": True}}
 
     self.batch_size = 10000 if self.task == "train" else 4000
@@ -87,15 +87,22 @@ class GlobalEncoderDecoderConfig:
 
     self.network = get_net_dict(
       lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim, beam_size=beam_size, sos_idx=sos_idx,
-      time_red=time_red, l2=0.0001, learning_rate=self.learning_rate, feature_stddev=feature_stddev)
+      time_red=time_red, l2=0.0001, learning_rate=self.learning_rate, feature_stddev=feature_stddev,
+      target=label_name)
 
     if self.task == "train":
       assert train_data_opts and cv_data_opts and devtrain_data_opts
-      self.train = get_dataset_dict_wo_alignment(**train_data_opts)
-      self.dev = get_dataset_dict_wo_alignment(**cv_data_opts)
-      self.eval_datasets = {'devtrain': get_dataset_dict_wo_alignment(**devtrain_data_opts)}
+      if "label_hdf" not in train_data_opts:
+        # in this case, the labels are added via the ExternSprintDataset vocab option
+        get_dataset_dict_func = get_dataset_dict_wo_alignment
+      else:
+        # in this case, the labels are added via an external hdf file
+        get_dataset_dict_func = get_dataset_dict_w_labels
+      self.train = get_dataset_dict_func(**train_data_opts)
+      self.dev = get_dataset_dict_func(**cv_data_opts)
+      self.eval_datasets = {'devtrain': get_dataset_dict_func(**devtrain_data_opts)}
     elif self.task == "search":
-      assert search_data_opts
+      assert search_data_opts and label_name == "bpe"
       self.search_data = get_dataset_dict_wo_alignment(**search_data_opts)
 
     if pretrain:
