@@ -17,7 +17,7 @@ class GlobalEncoderDecoderConfig:
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
           task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
           train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
-          time_red=(3, 2), pretrain=True, post_config={}):
+          time_red=(3, 2), pretrain=True, pretrain_reps=None, post_config={}):
 
     self.post_config = post_config
 
@@ -102,6 +102,8 @@ class GlobalEncoderDecoderConfig:
       self.pretrain = {
         'copy_param_mode': 'subset',
         'construction_algo': CodeWrapper(custom_construction_algo_str)}
+      if pretrain_reps is not None:
+        self.pretrain["repetitions"] = pretrain_reps
 
   def get_config(self):
     config_dict = {k: v for k, v in self.__dict__.items() if
