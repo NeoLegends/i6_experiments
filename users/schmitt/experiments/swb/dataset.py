@@ -148,6 +148,35 @@ def get_dataset_dict_w_alignment(data, rasr_config_path, rasr_nn_trainer_exe, se
   return d
 
 
+def get_dataset_dict_w_labels(data, rasr_config_path, rasr_nn_trainer_exe, segment_file, label_hdf, label_name, epoch_split=6):
+  hdf_files = [label_hdf]
+
+  d = {
+    "class": "ExternSprintDataset",
+    "sprintTrainerExecPath": rasr_nn_trainer_exe,
+    "sprintConfigStr": DelayedFormat("--config={}", rasr_config_path),
+    "suppress_load_seqs_print": True,  # less verbose
+    "input_stddev": 3.}
+
+  label_opts = {
+    "class": "HDFDataset", "files": hdf_files, "use_cache_manager": True,
+    "seq_list_filter_file": segment_file}  # otherwise not right selection
+  if data == "train":
+    estimated_num_seqs = 227047
+    label_opts["partition_epoch"] = epoch_split
+    label_opts["estimated_num_seqs"] = (estimated_num_seqs // epoch_split)
+    label_opts["seq_ordering"] = "laplace:%i" % (estimated_num_seqs // 1000)
+    label_opts["seq_order_seq_lens_file"] = "/u/zeyer/setups/switchboard/dataset/data/seq-lens.train.txt.gz"
+  d = {
+    "class": "MetaDataset", "datasets": {"sprint": d, "hdf": label_opts}, "data_map": {
+      "data": ("sprint", "data"),
+      label_name: ("hdf", "data"),
+    }, "seq_order_control_dataset": "hdf",
+  }
+
+  return d
+
+
 def get_phoneme_dataset():
   dataset_dict = {
     'class': 'ExternSprintDataset',
