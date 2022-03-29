@@ -179,7 +179,8 @@ def custom_construction_algo(idx, net_dict):
 
 def get_new_net_dict(
   lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev):
-  net_dict = {
+  net_dict = {"#info": {"att_num_heads": att_num_heads, "enc_val_per_head": (lstm_dim * 2) // att_num_heads}}
+  net_dict.update({
     "source": {
       "class": "eval",
       "eval": "self.network.get_config().typed_value('transform')(source(0, as_data=True), network=self.network)"},
@@ -284,7 +285,7 @@ def get_new_net_dict(
     "decision": {
       "class": "decide", "from": ["output"], "loss": "edit_distance", "target": "bpe", "loss_opts": {
         # "debug_print": True
-      }}}
+      }}})
 
   if feature_stddev is not None:
     assert type(feature_stddev) == float
@@ -333,6 +334,7 @@ def new_custom_construction_algo(idx, net_dict):
         net_dict[layer]["n_out"] = int(net_dict[layer]["n_out"] * dim_frac)
         if "dropout" in net_dict[layer]:
             net_dict[layer]["dropout"] *= dim_frac
+    net_dict["enc_value"]["dims"] = (net_dict["#info"]["att_num_heads"], int(net_dict["#info"]["enc_val_per_head"] * dim_frac * 0.5) * 2)
     # Use label smoothing only at the very end.
     net_dict["output"]["unit"]["output_prob"]["loss_opts"]["label_smoothing"] = 0
     return net_dict
