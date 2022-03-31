@@ -499,11 +499,12 @@ def get_extended_net_dict(
       }
 
       if sep_sil_model is not None:
+        assert sep_sil_model in ["mean", "min"]
         rec_unit_dict.update({
           "pool_segments": {
             "class": "copy", "from": "segments"},
           "pooled_segment": {
-            "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "pool_segments"},
+            "class": "reduce", "mode": sep_sil_model, "axes": ["stag:att_t"], "from": "pool_segments"},
           "sil_model": {
             "class": "linear", "activation": "tanh", "n_out": 128, "dropout": 0.3, "L2": l2, "from": ["pooled_segment"]},
           "sil_log_prob0": {"class": "linear", "from": "sil_model", "activation": None, "n_out": 1},
