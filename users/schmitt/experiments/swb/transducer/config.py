@@ -160,7 +160,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
     search_use_recomb=False, feature_stddev=None, recomb_bpe_merging=True, dump_align=False,
     label_dep_length_model=False, label_dep_means=None, max_seg_len=None, length_model_focal_loss=2.0,
-    label_model_focal_loss=2.0, **kwargs):
+    label_model_focal_loss=2.0, import_model=None, **kwargs):
 
     super().__init__(*args, **kwargs)
 
@@ -172,6 +172,9 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
     self.accum_grad_multiple_step = 2
 
     self.function_prolog = [_mask, random_mask, transform]
+
+    if import_model is not None:
+      self.import_model_train_epoch1 = import_model
 
     if self.task == "search":
       if recomb_bpe_merging:
