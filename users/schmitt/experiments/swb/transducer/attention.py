@@ -48,7 +48,7 @@ def add_attention(
   :return: dict net_dict with added attention mechanism
   """
 
-  assert not (att_area == "win" and att_win_size == "full"), "Currently not implemented since readout is masked"
+  # assert not (att_area == "win" and att_win_size == "full"), "Currently not implemented since readout is masked"
 
   net_dict = copy.deepcopy(net_dict)
 
@@ -159,81 +159,81 @@ def add_attention(
       "att_ctx": {"class": "copy", "from": "base:att_ctx"}, "att_val": {"class": "copy", "from": "base:att_val"}
     })
 
-  # def add_global_window():
-  #   def add_global_with_weight_feedback():
-  #     net_dict.update({
-  #       "inv_fertility": {
-  #         "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1}, })
-  #     net_dict["output"]["unit"].update({
-  #       "weight_feedback": {
-  #         "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
-  #         "n_out": EncKeyTotalDim},
-  #       "accum_att_weights": {
-  #         "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
-  #         "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": 1, "shape": (None, 1)}}, })
-  #     net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
-  #
-  #     if not (att_seg_use_emb and att_seg_emb_size):
-  #       net_dict.update({
-  #         "enc_ctx": {  # (B, T, D)
-  #           "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
-  #           "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
-  #         "enc_val": {"class": "copy", "from": ["encoder"]}, })
-  #       net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
-  #                                                              in net_dict["output"]["unit"]["att_energy_in"]["from"]]
-  #       # see explanation above on the "att" layer
-  #       if task == "train":
-  #         net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
-  #       else:
-  #         net_dict["output"]["unit"]['att0']["base"] = "base:enc_val"
-  #     else:
-  #       raise NotImplementedError
-  #       # net_dict.update({
-  #       #   "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"}, })
-  #       #
-  #       # net_dict["output"]["unit"].update({
-  #       #   "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
-  #       #   "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-  #       #   "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]}, "att_ctx": {  # (B, T, D)
-  #       #     "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
-  #       #     "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}})
-  #       # for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
-  #       #   if cond in net_dict["output"]["unit"]:
-  #       #     net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices" if item == "segment_indices" else item
-  #       #                                                 for item in net_dict["output"]["unit"][cond]["from"]]
-  #
-  #   def add_global_without_weight_feedback():
-  #     net_dict.update({
-  #       "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": att_time_tag}}})
-  #     readout_level_dict.update({
-  #       "att_ctx0": {  # (B, T, D)
-  #         "class": "linear", "from": ["base:base:encoder_new"], "activation": None, "with_bias": False,
-  #         "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
-  #       "att_ctx": {
-  #         "class": "copy", "from": ["att_ctx0"]},
-  #       "att_val": {  # (B,T,V)
-  #         "class": "copy", "from": ["base:base:encoder_new"]}})
-  #
-  #     if att_seg_use_emb and att_seg_emb_size:
-  #       net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
-  #       net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
-  #       net_dict["output"]["unit"]["att_ctx"]["from"] = ["att_val0", "embedding0"]
-  #       net_dict["output"]["unit"].update({
-  #         "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
-  #         "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
-  #         "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
-  #         # "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
-  #         "att_val": {  # (B,T,V)
-  #           "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
-  #             "t": "time"}},
-  #         "att_val1": {  # (B, T, D)
-  #           "class": "linear", "from": ["att_val0", "embedding0"], "activation": None, "with_bias": False,
-  #           "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2},
-  #       })
-  #
-  #   att_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
-  #
-  #   add_global_without_weight_feedback()
+  def add_global_window():
+    def add_global_with_weight_feedback():
+      net_dict.update({
+        "inv_fertility": {
+          "class": "linear", "activation": "sigmoid", "with_bias": False, "from": "encoder", "n_out": 1}, })
+      net_dict["output"]["unit"].update({
+        "weight_feedback": {
+          "class": "linear", "activation": None, "with_bias": False, "from": ["prev:accum_att_weights"],
+          "n_out": EncKeyTotalDim},
+        "accum_att_weights": {
+          "class": "eval", "from": ["prev:accum_att_weights", "att_weights", "base:inv_fertility"],
+          "eval": "source(0) + source(1) * source(2) * 0.5", "out_type": {"dim": 1, "shape": (None, 1)}}, })
+      net_dict["output"]["unit"]["att_energy_in"]["from"].append("weight_feedback")
+
+      if not (att_seg_use_emb and att_seg_emb_size):
+        net_dict.update({
+          "enc_ctx": {  # (B, T, D)
+            "class": "linear", "from": "encoder", "activation": None, "with_bias": False,
+            "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+          "enc_val": {"class": "copy", "from": ["encoder"]}, })
+        net_dict["output"]["unit"]["att_energy_in"]["from"] = ["base:enc_ctx" if item == "att_ctx" else item for item
+                                                               in net_dict["output"]["unit"]["att_energy_in"]["from"]]
+        # see explanation above on the "att" layer
+        if task == "train":
+          net_dict["output"]["unit"]['att']["base"] = "base:enc_val"
+        else:
+          net_dict["output"]["unit"]['att0']["base"] = "base:enc_val"
+      else:
+        raise NotImplementedError
+        # net_dict.update({
+        #   "segment_indices": {"class": "range_in_axis", "from": "encoder", "axis": "t"}, })
+        #
+        # net_dict["output"]["unit"].update({
+        #   "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+        #   "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+        #   "att_val": {"class": "copy", "from": ["base:encoder", "embedding0"]}, "att_ctx": {  # (B, T, D)
+        #     "class": "linear", "from": ["base:encoder", "embedding0"], "activation": None, "with_bias": False,
+        #     "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2}})
+        # for cond in ["is_in_segment", "left_of_segment", "is_cur_step"]:
+        #   if cond in net_dict["output"]["unit"]:
+        #     net_dict["output"]["unit"][cond]["from"] = ["base:segment_indices" if item == "segment_indices" else item
+        #                                                 for item in net_dict["output"]["unit"][cond]["from"]]
+
+    def add_global_without_weight_feedback():
+      net_dict.update({
+        "encoder_new": {"class": "reinterpret_data", "from": "encoder", "set_dim_tags": {"t": att_time_tag}}})
+      readout_level_dict.update({
+        "att_ctx0": {  # (B, T, D)
+          "class": "linear", "from": ["base:encoder_new"], "activation": None, "with_bias": False,
+          "n_out": EncKeyTotalDim, "L2": l2, "dropout": 0.2},
+        "att_ctx": {
+          "class": "copy", "from": ["att_ctx0"]},
+        "att_val": {  # (B,T,V)
+          "class": "copy", "from": ["base:encoder_new"]}})
+
+      if att_seg_use_emb and att_seg_emb_size:
+        net_dict["output"]["unit"]["att_val0"] = net_dict["output"]["unit"]["att_val"].copy()
+        net_dict["output"]["unit"]["att_ctx"] = net_dict["output"]["unit"]["att_ctx0"].copy()
+        net_dict["output"]["unit"]["att_ctx"]["from"] = ["att_val0", "embedding0"]
+        net_dict["output"]["unit"].update({
+          "segment_indices": {"class": "range_in_axis", "from": "att_val0", "axis": "t"},
+          "segment_left_index": {"class": "copy", "from": ["segment_starts"]},
+          "segment_right_index": {"class": "combine", "from": ["segment_starts", "segment_lens0"], "kind": "add"},
+          # "att_val1": {"class": "copy", "from": ["att_val0", "embedding0"]},
+          "att_val": {  # (B,T,V)
+            "class": "reinterpret_data", "from": ["att_val1"], "set_axes": {
+              "t": "time"}},
+          "att_val1": {  # (B, T, D)
+            "class": "linear", "from": ["att_val0", "embedding0"], "activation": None, "with_bias": False,
+            "n_out": EncValueTotalDim // EncValueDecFactor, "L2": l2, "dropout": 0.2},
+        })
+
+    att_time_tag = CodeWrapper('Dim(kind=Dim.Types.Spatial, description="att_t")')
+
+    add_global_without_weight_feedback()
 
   def add_segmental_window():
     def add_clamping():
@@ -473,8 +473,8 @@ def add_attention(
         "class": "reduce", "mode": "mean", "axes": ["stag:att_t"], "from": "segments"}})
 
 
-  if (att_seg_use_emb and att_seg_emb_size) or att_area == "seg":
-    add_segment_information()
+  # if (att_seg_use_emb and att_seg_emb_size) or att_area == "seg":
+  add_segment_information()
   if att_type != "pooling":
     if att_seg_use_emb and att_seg_emb_size:
       add_segmental_embedding_vector()
