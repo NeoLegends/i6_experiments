@@ -88,7 +88,7 @@ class GlobalEncoderDecoderConfig:
     self.network = get_net_dict(
       lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim, beam_size=beam_size, sos_idx=sos_idx,
       time_red=time_red, l2=0.0001, learning_rate=self.learning_rate, feature_stddev=feature_stddev,
-      target=label_name)
+      target=label_name, task=task)
 
     if self.task == "train":
       assert train_data_opts and cv_data_opts and devtrain_data_opts

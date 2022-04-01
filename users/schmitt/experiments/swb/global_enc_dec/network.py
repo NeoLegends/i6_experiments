@@ -1,5 +1,5 @@
 def get_net_dict(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target, task):
   att_key_per_head_dim = att_key_dim // att_num_heads
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
   net_dict.update({
@@ -92,14 +92,16 @@ def get_net_dict(
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
         "output_prob": {
           "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
-          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}}, "target": target,
-          "max_seq_len": "max_len_from('base:encoder')"},
+          "loss_opts": {"focal_loss_factor": 2.0, "label_smoothing": 0.1}}}, "target": target},
 
     "decision": {
       "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
       }
     }
   })
+
+  if task != "eval":
+    net_dict["output"]["max_seq_len"] = "max_len_from('base:encoder')"
 
   return net_dict
 
@@ -178,7 +180,7 @@ def custom_construction_algo(idx, net_dict):
 
 
 def get_new_net_dict(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target, task):
   net_dict = {"#info": {"att_num_heads": att_num_heads, "enc_val_per_head": (lstm_dim * 2) // att_num_heads}}
   net_dict.update({
     "source": {
@@ -280,12 +282,15 @@ def get_new_net_dict(
         # merge + post_merge bias
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]}, "output_prob": {
           "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
-          "loss_opts": {"label_smoothing": 0.1}}}, "target": target, "max_seq_len": "max_len_from('base:encoder')"},
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": target},
 
     "decision": {
       "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
         # "debug_print": True
       }}})
+
+  if task != "eval":
+    net_dict["output"]["max_seq_len"] = "max_len_from('base:encoder')"
 
   if feature_stddev is not None:
     assert type(feature_stddev) == float
@@ -341,7 +346,7 @@ def new_custom_construction_algo(idx, net_dict):
 
 
 def get_net_dict_like_seg_model(
-  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target):
+  lstm_dim, att_num_heads, att_key_dim, beam_size, sos_idx, l2, learning_rate, time_red, feature_stddev, target, task):
   net_dict = {"#info": {"lstm_dim": lstm_dim, "l2": l2, "learning_rate": learning_rate, "time_red": time_red}}
   net_dict.update({
     "source": {
@@ -467,12 +472,15 @@ def get_net_dict_like_seg_model(
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
         "output_prob": {
           "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": target, "loss": "ce",
-          "loss_opts": {"label_smoothing": 0.1}}}, "target": target, "max_seq_len": "max_len_from('base:encoder')"},
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": target},
 
     "decision": {
       "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
         # "debug_print": True
       }}})
+
+  if task != "eval":
+    net_dict["output"]["max_seq_len"] = "max_len_from('base:encoder')"
 
   if feature_stddev is not None:
     assert type(feature_stddev) == float
