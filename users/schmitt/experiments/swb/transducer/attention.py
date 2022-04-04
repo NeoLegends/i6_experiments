@@ -78,10 +78,12 @@ def add_attention(
       "const1": {"class": "constant", "value": 1},
       "segment_starts": {  # (B,)
         "class": "switch", "condition": "prev:output_emit", "true_from": ":i",
-        "false_from": "prev:segment_starts", "initial_output": 0, "is_output_layer": True},
+        "false_from": "prev:segment_starts", "initial_output": 0,
+        "is_output_layer": False if att_win_size == "full" and task != "train" else True},
       "segment_lens0": {"class": "combine", "kind": "sub", "from": [":i", "segment_starts"]},
       "segment_lens": {
-        "class": "combine", "kind": "add", "from": ["segment_lens0", "const1"], "is_output_layer": True},  # (B,)
+        "class": "combine", "kind": "add", "from": ["segment_lens0", "const1"],
+        "is_output_layer": False if att_win_size == "full" and task != "train" else True},  # (B,)
     })
 
   def add_segmental_embedding_vector():
