@@ -13,11 +13,12 @@ from recipe.i6_core.returnn.config import ReturnnConfig, CodeWrapper
 class GlobalEncoderDecoderConfig:
   def __init__(
           self, vocab, glob_model_type, target_num_labels=1030,
-          epoch_split=6, beam_size=12, feature_stddev=None,
+          epoch_split=6, beam_size=12, feature_stddev=None, dump_output=False,
           rasr_config="/u/schmitt/experiments/transducer/config/rasr-configs/merged.config",
           task="train", num_epochs=150, lstm_dim=1024, att_num_heads=1, sos_idx=0,
           train_data_opts=None, cv_data_opts=None, devtrain_data_opts=None, search_data_opts=None,
-          time_red=(3, 2), pretrain=True, pretrain_reps=None, label_name="bpe", post_config={}):
+          time_red=(3, 2), pretrain=True, pretrain_reps=None, label_name="bpe", post_config={},
+          weight_dropout=0.0, with_state_vector=True, with_weight_feedback=True, prev_target_in_readout=True):
 
     self.post_config = post_config
 
@@ -35,7 +36,7 @@ class GlobalEncoderDecoderConfig:
     self.batching = "random"
     self.log_batch_size = True
     self.max_seqs = 200
-    self.max_seq_length = {"bpe": 75}
+    self.max_seq_length = {label_name: 75}
     self.truncation = -1
 
     self.gradient_clip = 0
@@ -76,6 +77,10 @@ class GlobalEncoderDecoderConfig:
       custom_construction_algo = network.custom_construction_algo
       custom_construction_algo_str = "custom_construction_algo"
       get_net_dict = network.get_net_dict_like_seg_model
+    elif glob_model_type == "best":
+      custom_construction_algo = network.best_custom_construction_algo
+      custom_construction_algo_str = "best_custom_construction_algo"
+      get_net_dict = network.get_best_net_dict
     else:
       custom_construction_algo = network.custom_construction_algo
       custom_construction_algo_str = "custom_construction_algo"
@@ -85,10 +90,16 @@ class GlobalEncoderDecoderConfig:
                           "from subprocess import check_output, CalledProcessError"]
     self.function_prolog = [custom_construction_algo, _mask, random_mask, transform]
 
-    self.network = get_net_dict(
-      lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim, beam_size=beam_size, sos_idx=sos_idx,
-      time_red=time_red, l2=0.0001, learning_rate=self.learning_rate, feature_stddev=feature_stddev,
-      target=label_name, task=task)
+    if glob_model_type == "best":
+      self.network = get_net_dict(
+        lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim, beam_size=beam_size, sos_idx=sos_idx,
+        feature_stddev=feature_stddev, weight_dropout=weight_dropout, with_state_vector=with_state_vector,
+        with_weight_feedback=with_weight_feedback, prev_target_in_readout=prev_target_in_readout,
+        target=label_name, task=task, targetb_num_labels=target_num_labels+1, dump_output=dump_output)
+    else:
+      self.network = get_net_dict(lstm_dim=lstm_dim, att_num_heads=att_num_heads, att_key_dim=lstm_dim,
+        beam_size=beam_size, sos_idx=sos_idx, time_red=time_red, l2=0.0001, learning_rate=self.learning_rate,
+        feature_stddev=feature_stddev, target=label_name, task=task)
 
     if self.task == "train":
       assert train_data_opts and cv_data_opts and devtrain_data_opts
