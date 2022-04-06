@@ -256,7 +256,7 @@ import numpy as np
 def get_extended_net_dict(
   pretrain_idx, learning_rate, num_epochs, enc_val_dec_factor,
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
-  l2, beam_size, length_model_inputs, prev_att_in_state, use_att,
+  l2, beam_size, length_model_inputs, prev_att_in_state, use_att, prev_target_in_readout,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
   fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
   label_dep_length_model=False, search_use_recomb=True, feature_stddev=None, dump_align=False,
@@ -483,6 +483,9 @@ def get_extended_net_dict(
         "label_log_prob": {
           "class": "combine", "kind": "add",
           "from": ["label_log_prob0"]}})
+
+      if prev_target_in_readout:
+        rec_unit_dict["readout_in"]["from"].append("prev_non_blank_embed")
 
       lm_dict = {
         "input_embed0": {
@@ -848,4 +851,47 @@ def custom_construction_algo(idx, net_dict):
 def custom_construction_algo_alignment(idx, net_dict):
   # For debugging, use: python3 ./crnn/Pretrain.py config...
   net_dict = get_net_dict(pretrain_idx=idx)
+  return net_dict
+
+
+def new_custom_construction_algo(idx, net_dict):
+  # For debugging, use: python3 ./crnn/Pretrain.py config... Maybe set repetitions=1 below.
+  StartNumLayers = 2
+  InitialDimFactor = 0.5
+  orig_num_lstm_layers = 0
+  while "lstm%i_fw" % orig_num_lstm_layers in net_dict:
+    orig_num_lstm_layers += 1
+  assert orig_num_lstm_layers >= 2
+  orig_red_factor = 1
+  for i in range(orig_num_lstm_layers - 1):
+    orig_red_factor *= net_dict["lstm%i_pool" % i]["pool_size"][0]
+  net_dict["#config"] = {}
+  if idx < 4:
+    # net_dict["#config"]["batch_size"] = 15000
+    net_dict["#config"]["accum_grad_multiple_step"] = 4
+  idx = max(idx - 4, 0)  # repeat first
+  num_lstm_layers = idx + StartNumLayers  # idx starts at 0. start with N layers
+  if num_lstm_layers > orig_num_lstm_layers:
+    # Finish. This will also use label-smoothing then.
+    return None
+  if num_lstm_layers == 2:
+    net_dict["lstm0_pool"]["pool_size"] = (orig_red_factor,)
+  # Skip to num layers.
+  net_dict["encoder"]["from"] = ["lstm%i_fw" % (num_lstm_layers - 1), "lstm%i_bw" % (num_lstm_layers - 1)]
+  # Delete non-used lstm layers. This is not explicitly necessary but maybe nicer.
+  for i in range(num_lstm_layers, orig_num_lstm_layers):
+    del net_dict["lstm%i_fw" % i]
+    del net_dict["lstm%i_bw" % i]
+    del net_dict["lstm%i_pool" % (i - 1)]
+  # Thus we have layers 0 .. (num_lstm_layers - 1).
+  layer_idxs = list(range(0, num_lstm_layers))
+  layers = ["lstm%i_fw" % i for i in layer_idxs] + ["lstm%i_bw" % i for i in layer_idxs]
+  grow_frac = 1.0 - float(orig_num_lstm_layers - num_lstm_layers) / (orig_num_lstm_layers - StartNumLayers)
+  dim_frac = InitialDimFactor + (1.0 - InitialDimFactor) * grow_frac
+  for layer in layers:
+    net_dict[layer]["n_out"] = int(net_dict[layer]["n_out"] * dim_frac)
+    if "dropout" in net_dict[layer]:
+      net_dict[layer]["dropout"] *= dim_frac
+  # Use label smoothing only at the very end.
+  net_dict["label_model"]["unit"]["label_prob"]["loss_opts"]["label_smoothing"] = 0
   return net_dict
