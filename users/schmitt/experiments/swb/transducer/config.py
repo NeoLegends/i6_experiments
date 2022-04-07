@@ -151,7 +151,7 @@ class TransducerSWBAlignmentConfig(TransducerSWBBaseConfig):
 
 class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
   def __init__(
-    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim,
+    self, *args, att_seg_emb_size, att_seg_use_emb, att_win_size, lstm_dim, direct_softmax,
     att_weight_feedback, att_type, att_seg_clamp_size, att_seg_left_size, att_seg_right_size, att_area,
     att_num_heads, length_model_inputs, label_smoothing, prev_att_in_state, fast_rec_full, pretrain_reps,
     scheduled_sampling, use_attention, emit_extra_loss, efficient_loss, time_red, ctx_size="full",
@@ -219,7 +219,7 @@ class TransducerSWBExtendedConfig(TransducerSWBBaseConfig):
       efficient_loss=efficient_loss, time_reduction=time_red, ctx_size=ctx_size, fast_rec=fast_rec,
       sep_sil_model=sep_sil_model, sil_idx=sil_idx, sos_idx=sos_idx, prev_target_in_readout=prev_target_in_readout,
       feature_stddev=feature_stddev, search_use_recomb=search_use_recomb, dump_align=dump_align,
-      label_dep_length_model=label_dep_length_model, label_dep_means=label_dep_means,
+      label_dep_length_model=label_dep_length_model, label_dep_means=label_dep_means, direct_softmax=direct_softmax,
       max_seg_len=max_seg_len, hybrid_hmm_like_label_model=hybrid_hmm_like_label_model,
       length_model_focal_loss=length_model_focal_loss, label_model_focal_loss=label_model_focal_loss)
     if use_attention:

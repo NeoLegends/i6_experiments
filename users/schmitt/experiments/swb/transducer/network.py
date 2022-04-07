@@ -258,7 +258,7 @@ def get_extended_net_dict(
   target_num_labels, targetb_num_labels, targetb_blank_idx, target, task, scheduled_sampling, lstm_dim,
   l2, beam_size, length_model_inputs, prev_att_in_state, use_att, prev_target_in_readout,
   label_smoothing, emit_loss_scale, efficient_loss, emit_extra_loss, time_reduction, ctx_size="inf",
-  fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0,
+  fast_rec=False, fast_rec_full=False, sep_sil_model=None, sil_idx=None, sos_idx=0, direct_softmax=False,
   label_dep_length_model=False, search_use_recomb=True, feature_stddev=None, dump_align=False,
   label_dep_means=None, max_seg_len=None, hybrid_hmm_like_label_model=False, length_model_focal_loss=2.0,
   label_model_focal_loss=2.0):
@@ -478,7 +478,9 @@ def get_extended_net_dict(
         "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": "readout_in"},
         # the following two get updated later if there is a separate silence model
         "label_log_prob0": {
-          "class": "linear", "from": "readout", "activation": "log_softmax", "dropout": 0.3,
+          "class": "linear", "from": "readout",
+          "activation": "log_softmax" if not direct_softmax else None,
+          "dropout": 0.3,
           "n_out": target_num_labels},
         "label_log_prob": {
           "class": "combine", "kind": "add",
@@ -502,6 +504,7 @@ def get_extended_net_dict(
       }
 
       if sep_sil_model is not None:
+        raise NotImplementedError
         assert sep_sil_model in ["mean", "min"]
         rec_unit_dict.update({
           "pool_segments": {
@@ -563,7 +566,8 @@ def get_extended_net_dict(
         "label_prob": {
           "class": "activation",
           "from": "label_log_prob" if not sep_sil_model else ["sil_log_prob", "label_log_prob"],
-          "is_output_layer": True, "activation": "exp", "target": "label_ground_truth",
+          "is_output_layer": True, "activation": "exp" if not direct_softmax else "softmax",
+          "target": "label_ground_truth",
           "loss": "ce" if task == "train" and not efficient_loss else None,
           "loss_opts": {"focal_loss_factor": label_model_focal_loss, "label_smoothing": 0.1}},
         "output": {
