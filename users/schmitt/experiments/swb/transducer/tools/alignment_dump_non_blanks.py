@@ -18,6 +18,8 @@ def dump_non_blanks(hdf_dataset_in, hdf_dataset_out, blank_idx):
 
   hdf_dataset_in.init_seq_order()
   seq_idx = 0
+  num_only_blank = 0
+  skipped_tags = []
 
   while hdf_dataset_in.is_less_than_num_seqs(seq_idx):
     # progress indication
@@ -31,6 +33,15 @@ def dump_non_blanks(hdf_dataset_in, hdf_dataset_out, blank_idx):
 
     seq_len = len(non_blank_data)
     tag = hdf_dataset_in.get_tag(seq_idx)
+
+    if seq_len == 0:
+      print("SEQ IDX: ", seq_idx)
+      print("TAG: ", tag)
+      print("ALIGN SEQ: ", data)
+      skipped_tags.append(tag)
+      num_only_blank += 1
+      seq_idx += 1
+      continue
 
     new_data = tf.constant(np.expand_dims(non_blank_data, axis=0), dtype="int32")
 
@@ -48,6 +59,11 @@ def dump_non_blanks(hdf_dataset_in, hdf_dataset_out, blank_idx):
     hdf_dataset_out.insert_batch(new_data, seq_len=seq_lens, seq_tag=[tag], extra=extra)
 
     seq_idx += 1
+
+  print("NUM ONLY BLANK: ", num_only_blank)
+
+  with open("skipped_seqs", "w+") as f:
+    f.write(str(skipped_tags))
 
 
 def init(hdf_file):
