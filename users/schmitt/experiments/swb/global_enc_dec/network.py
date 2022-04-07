@@ -513,8 +513,8 @@ def get_best_net_dict(
     "conv1p": {"class": "pool", "mode": "max", "padding": "same", "pool_size": (1, 2), "from": "conv1"},  # (T,10,32)
     "conv_merged": {"class": "merge_dims", "from": "conv1p", "axes": "static"},  # (T,320)
 
-    "lstm0_fw": {"class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": "conv_merged"},
-    "lstm0_bw": {"class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": "conv_merged"},
+    "lstm0_fw": {"class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": 1, "from": "conv_merged", "L2": 0.0001},
+    "lstm0_bw": {"class": "rec", "unit": "nativelstm2", "n_out": lstm_dim, "direction": -1, "from": "conv_merged", "L2": 0.0001},
     "lstm0_pool": {
       "class": "pool", "mode": "max", "padding": "same", "pool_size": (3,), "from": ["lstm0_fw", "lstm0_bw"],
       "trainable": False},
@@ -582,7 +582,8 @@ def get_best_net_dict(
     "output": {
       "class": "rec", "from": [], "unit": {
         'output': {
-          'class': 'choice', 'target': "target_w_eos", 'beam_size': beam_size, 'from': ["label_prob"],
+          'class': 'choice', 'target': "target_w_eos" if task == "train" else target,
+          'beam_size': beam_size, 'from': ["label_prob"],
           "initial_output": sos_idx}, "end": {"class": "compare", "from": ["output"], "value": 0}, 'target_embed': {
           'class': 'linear', 'activation': None, "with_bias": False, 'from': ['output'], "n_out": 621,
           "initial_output": 0},  # feedback_input
@@ -618,9 +619,11 @@ def get_best_net_dict(
         "readout_in": {
           "class": "linear", "from": ["lm", "prev:target_embed", "att"] if prev_target_in_readout else ["lm", "att"],
           "activation": None, "n_out": 1000}, # merge + post_merge bias
-        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]}, "label_prob": {
-          "class": "softmax", "from": ["readout"], "dropout": 0.3, "target": "target_w_eos", "loss": "ce",
-          "loss_opts": {"label_smoothing": 0.1}}}, "target": "target_w_eos"},
+        "readout": {"class": "reduce_out", "mode": "max", "num_pieces": 2, "from": ["readout_in"]},
+        "label_prob": {
+          "class": "softmax", "from": ["readout"], "dropout": 0.3,
+          "target": "target_w_eos" if task == "train" else target, "loss": "ce",
+          "loss_opts": {"label_smoothing": 0.1}}}, "target": "target_w_eos" if task == "train" else target},
 
     "decision": {
       "class": "decide", "from": ["output"], "loss": "edit_distance", "target": target, "loss_opts": {
@@ -686,7 +689,7 @@ def best_custom_construction_algo(idx, net_dict):
       net_dict[layer]["dropout"] *= dim_frac
   net_dict["enc_value"]["dims"] = (net_dict["#info"]["att_num_heads"], int(net_dict["#info"]["enc_val_per_head"] * dim_frac * 0.5) * 2)
   # Use label smoothing only at the very end.
-  net_dict["output"]["unit"]["output_prob"]["loss_opts"]["label_smoothing"] = 0
+  net_dict["output"]["unit"]["label_prob"]["loss_opts"]["label_smoothing"] = 0
   net_dict["output"]["unit"]["att"]["axes"][0] = ["dim:%s" % net_dict["#info"]["att_num_heads"]]
   net_dict["output"]["unit"]["att"]["axes"][1] = [
     "dim:%s" % (int(net_dict["#info"]["enc_val_per_head"] * dim_frac * 0.5) * 2)]
