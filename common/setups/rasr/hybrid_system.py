@@ -486,7 +486,7 @@ class HybridSystem(NnSystem):
             native_lstm_job = returnn.CompileNativeOpJob(
                 "NativeLstm2",
                 returnn_root=self.returnn_root,
-                returnn_python_exe=self.returnn_python_exe,
+                returnn_python_exe="/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1/bin/python3.8",
                 blas_lib=self.blas_lib,
             )
             native_lstm_job.add_alias("%s/compile_native_op" % name)
@@ -494,7 +494,7 @@ class HybridSystem(NnSystem):
             graph_compile_job = returnn.CompileTFGraphJob(
                 self.adapt_returnn_config_for_recog(returnn_config),
                 returnn_root=self.returnn_root,
-                returnn_python_exe=self.returnn_python_exe,
+                returnn_python_exe="/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1/bin/python3.8",
             )
             graph_compile_job.add_alias(f"nn_recog/graph/{name}.meta")
 
